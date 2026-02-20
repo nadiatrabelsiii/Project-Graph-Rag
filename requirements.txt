@@ -1,0 +1,20 @@
+# ── Core ────────────────────────────────────────
+fastapi>=0.115.0
+pydantic>=2.0
+
+# ── Neo4j ───────────────────────────────────────
+neo4j>=5.0.0
+
+# ── ML / LLM ───────────────────────────────────
+torch>=2.4.0
+transformers>=4.46.0
+accelerate>=0.34.0
+sentencepiece
+sentence-transformers>=3.0.0
+
+# ── Agent ───────────────────────────────────────
+langgraph>=0.2.53
+langchain-core>=0.3.0
+
+# ── Modal deploy ───────────────────────────────
+modal>=0.66.0
