@@ -1,21 +1,28 @@
 """
 Structure-aware chunker for OCR'd Arabic legal/financial HTML → Graph RAG.
 
-v3 — Complete rewrite addressing:
+v4 — Multi-file support + document year detection.
+
+Addresses:
   - Heading text was leaking into previous article (now stripped)
   - Inline cross-references "الفصل 63 من القانون..." falsely detected as articles
-  - Split OCR lines ("الفصل\\n63 من...") merged before parsing
+  - Split OCR lines ("الفصل\n63 من...") merged before parsing
   - Article boundary = start of الفصل N separator, heading lines excluded
+
+Supports multiple OCR HTML files in a directory — each file is a separate
+document.  The document title and year are auto-detected from the header
+(e.g.  قانون عدد 17 لسنة 2025 مؤرخ في 12 ديسمبر 2025 يتعلق بقانون المالية لسنة 2026).
 
 NO markdown # dependency — stripped on load.
 
 Usage:
     python chunk_graphrag.py
+    python chunk_graphrag.py --input-dir OCR_Law --output chunks_graphrag.json
     python chunk_graphrag.py --input ocr_output.html --output chunks.json
 """
 
 from __future__ import annotations
-import argparse, json, re, uuid
+import argparse, glob, json, re, uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
@@ -71,6 +78,13 @@ RE_FOOTER = re.compile(
 
 RE_MD_PREFIX = re.compile(r"^#{1,6}\s*")
 
+# Year detection:  قانون المالية لسنة 2026   or   لسنة 2025
+RE_LAW_YEAR_FINANCE = re.compile(r"قانون\s+المالية\s+لسنة\s+(\d{4})")
+RE_LAW_YEAR_GENERIC = re.compile(r"لسنة\s+(\d{4})")
+
+# Document title:  قانون عدد ... لسنة ... يتعلق ...
+RE_LAW_TITLE = re.compile(r"(قانون\s+عدد\s+\d+\s+لسنة\s+\d{4}[^\n]*)")
+
 
 # ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -78,6 +92,9 @@ RE_MD_PREFIX = re.compile(r"^#{1,6}\s*")
 class Chunk:
     chunk_id: str = ""
     chunk_type: str = ""
+    document_title: str = ""
+    document_year: Optional[str] = None
+    source_file: str = ""
     zone: str = ""
     section_path: str = ""
     article_number: Optional[str] = None
@@ -124,11 +141,39 @@ def page_at(idx: int, pmap: list[tuple[int, int]]) -> int:
 
 # ─── Load & preprocess ───────────────────────────────────────────────────────
 
-def load(path: str) -> tuple[list[str], list[tuple[int, int]], set[int]]:
+def detect_law_title_and_year(lines: list[str], limit: int = 30) -> tuple[str, Optional[str]]:
+    """Scan the first `limit` lines for a law title and the target year.
+
+    The *year* we want is the fiscal / application year, e.g. for
+    'قانون عدد 17 لسنة 2025 يتعلق بقانون المالية لسنة 2026' → year = '2026'.
+    """
+    doc_title = ""
+    doc_year: Optional[str] = None
+
+    text_block = "\n".join(lines[:limit])
+
+    # Title: first occurrence of  قانون عدد ...
+    tm = RE_LAW_TITLE.search(text_block)
+    if tm:
+        doc_title = re.sub(r"\s+", " ", tm.group(1)).strip().rstrip(".()١")
+
+    # Year: prefer "قانون المالية لسنة YYYY" (fiscal year), else last لسنة YYYY
+    fm = RE_LAW_YEAR_FINANCE.search(text_block)
+    if fm:
+        doc_year = fm.group(1)
+    else:
+        all_years = RE_LAW_YEAR_GENERIC.findall(text_block)
+        if all_years:
+            doc_year = all_years[-1]  # last year found is typically the target
+
+    return doc_title, doc_year
+
+
+def load(path: str) -> tuple[list[str], list[tuple[int, int]], set[int], str, Optional[str]]:
     """Load HTML, strip markdown #, rejoin OCR-split 'الفصل' lines.
-    Returns (lines, page_map, md_heading_lines) where md_heading_lines is
-    the set of output line indices that originally had a # prefix in the OCR.
-    We track these ONLY for section_path metadata — never to drop text.
+    Returns (lines, page_map, md_heading_lines, doc_title, doc_year) where
+    md_heading_lines is the set of output line indices that originally had
+    a # prefix in the OCR.
     """
     raw = Path(path).read_text(encoding="utf-8").split("\n")
 
@@ -147,8 +192,6 @@ def load(path: str) -> tuple[list[str], list[tuple[int, int]], set[int]]:
             page_map.append((len(lines), int(pm.group(1))))
 
         # Rejoin OCR split: line ending with "الفصل" + next line "63 من..."
-        # This is a CROSS-REFERENCE, not a new article. We join to prevent
-        # false detection.
         stripped = line.strip()
         if stripped.endswith("الفصل") or stripped == "الفصل":
             if i + 1 < len(raw):
@@ -165,7 +208,9 @@ def load(path: str) -> tuple[list[str], list[tuple[int, int]], set[int]]:
             md_heading_lines.add(out_idx)
         i += 1
 
-    return lines, page_map, md_heading_lines
+    doc_title, doc_year = detect_law_title_and_year(lines)
+
+    return lines, page_map, md_heading_lines, doc_title, doc_year
 
 
 # ─── Zone boundary ───────────────────────────────────────────────────────────
@@ -274,6 +319,9 @@ def build_law_chunks(
     zone_end: int,
     max_art_tokens: int,
     md_heading_lines: set[int] = None,
+    doc_title: str = "",
+    doc_year: Optional[str] = None,
+    source_file: str = "",
 ) -> list[Chunk]:
     """Build article chunks from classified lines."""
     if md_heading_lines is None:
@@ -297,77 +345,76 @@ def build_law_chunks(
 
     chunks = []
 
-    # --- Preamble ---
-    if art_starts:
-        first_idx = art_starts[0]["idx"]
-        preamble_lines = []
-        for c in classified[:first_idx]:
-            if c["type"] in (CONTENT, TABLE_LINE):
-                preamble_lines.append(c["text"])
-        preamble_text = clean_text("\n".join(preamble_lines))
-        if preamble_text.strip():
-            chunks.append(Chunk(
-                chunk_id=str(uuid.uuid4()),
-                chunk_type="preamble",
-                zone="law_text",
-                text=preamble_text,
-                cross_references=extract_refs(preamble_text),
-                page_start=1,
-                page_end=page_at(first_idx, page_map),
-                token_count=est_tokens(preamble_text),
-            ))
+    # Identify أحكام الميزانية section boundaries
+    ahkam_start = None
+    mihwar1_idx = None
+    for i, c in enumerate(classified):
+        if ahkam_start is None and "أحكام الميزانية" in c["text"]:
+            ahkam_start = i
+        if mihwar1_idx is None and re.search(r"المحور\s+الأو[ّ]?ل", c["text"]):
+            mihwar1_idx = i
+    # No special chunking: treat articles inside أحكام الميزانية as normal articles
 
     # --- Each article ---
     for ai, art in enumerate(art_starts):
         start_ci = _ci_of(classified, art["idx"])
-        
         # End: next article_start or zone_end
         if ai + 1 < len(art_starts):
             end_ci = _ci_of(classified, art_starts[ai + 1]["idx"])
         else:
             end_ci = len(classified)
 
-        # Collect ALL lines between this article and the next
-        # No lines are dropped — everything belongs to this فصل
+        # Section path: أحكام الميزانية if inside its boundaries, otherwise المحور/subheading
+        section_path = ""
+        if ahkam_start is not None and mihwar1_idx is not None and start_ci >= ahkam_start and start_ci < mihwar1_idx:
+            section_path = "أحكام الميزانية"
+        else:
+            current_mihwar = ""
+            for m_idx, m_title in mihwar_list:
+                if m_idx < art["idx"]:
+                    current_mihwar = m_title
+                else:
+                    break
+            # Find sub-heading for THIS article from md_heading_lines metadata
+            sub_heading = ""
+            for c in reversed(classified[max(0, start_ci - 10):start_ci]):
+                if c["idx"] in md_heading_lines and c["type"] == CONTENT:
+                    text_cand = c["text"].strip().rstrip(".-–: ")
+                    if 10 < len(text_cand) < 120 and not re.match(r"^\d", text_cand):
+                        sub_heading = text_cand
+                        break
+                if c["type"] == MIHWAR:
+                    break
+                if c["type"] == ARTICLE_START:
+                    break
+            path_parts = []
+            if current_mihwar:
+                path_parts.append(current_mihwar)
+            if sub_heading:
+                path_parts.append(sub_heading)
+            section_path = " > ".join(path_parts)
+
+        # Collect ALL lines between the last heading/subheading and article start, and all lines up to the next article
         art_lines = []
+        # Merge multi-line headlines/subheadlines before الفصل, attach to section_path, not chunk text
+        art_lines = []
+        # Find the first ARTICLE_START line in this chunk
+        article_found = False
         for c in classified[start_ci:end_ci]:
-            if c["type"] in (CONTENT, TABLE_LINE, ARTICLE_START):
-                art_lines.append(c["text"])
+            if not article_found:
+                if c["type"] == ARTICLE_START:
+                    article_found = True
+                    art_lines.append(c["text"])
+                # else: skip lines before الفصل (they are used for section_path/subheading only)
+            else:
+                if c["type"] in (CONTENT, TABLE_LINE, ARTICLE_START):
+                    art_lines.append(c["text"])
 
         text = clean_text("\n".join(art_lines))
         if not text.strip():
             continue
 
         art_num = art["art_num"]
-
-        # Section path
-        current_mihwar = ""
-        for m_idx, m_title in mihwar_list:
-            if m_idx < art["idx"]:
-                current_mihwar = m_title
-            else:
-                break
-
-        # Find sub-heading for THIS article from md_heading_lines metadata
-        sub_heading = ""
-        for c in reversed(classified[max(0, start_ci - 10):start_ci]):
-            if c["idx"] in md_heading_lines and c["type"] == CONTENT:
-                text_cand = c["text"].strip().rstrip(".-–: ")
-                # Only use as sub-heading if short & not a number line
-                if 10 < len(text_cand) < 120 and not re.match(r"^\d", text_cand):
-                    sub_heading = text_cand
-                    break
-            if c["type"] == MIHWAR:
-                break
-            if c["type"] == ARTICLE_START:
-                break
-
-        path_parts = []
-        if current_mihwar:
-            path_parts.append(current_mihwar)
-        if sub_heading:
-            path_parts.append(sub_heading)
-        section_path = " > ".join(path_parts)
 
         # Page range
         pg_start = page_at(art["idx"], page_map)
@@ -377,43 +424,29 @@ def build_law_chunks(
         refs = extract_refs(text)
         tok = est_tokens(text)
 
-        # Split oversized articles
-        if tok > max_art_tokens:
-            parts = _split_article(text, max_art_tokens)
-            for pi, part in enumerate(parts, 1):
-                chunks.append(Chunk(
-                    chunk_id=str(uuid.uuid4()),
-                    chunk_type="article",
-                    zone="law_text",
-                    section_path=section_path,
-                    article_number=f"{art_num}_part{pi}",
-                    text=part,
-                    cross_references=extract_refs(part),
-                    page_start=pg_start,
-                    page_end=pg_end,
-                    token_count=est_tokens(part),
-                ))
-        else:
-            chunks.append(Chunk(
-                chunk_id=str(uuid.uuid4()),
-                chunk_type="article",
-                zone="law_text",
-                section_path=section_path,
-                article_number=art_num,
-                text=text,
-                cross_references=refs,
-                page_start=pg_start,
-                page_end=pg_end,
-                token_count=tok,
-            ))
+        # Always treat as one article chunk, no subchunking by numbers
+        chunks.append(Chunk(
+            chunk_id=str(uuid.uuid4()),
+            chunk_type="article",
+            document_title=doc_title,
+            document_year=doc_year,
+            source_file=source_file,
+            zone="law_text",
+            section_path=section_path,
+            article_number=art_num,
+            text=text,
+            cross_references=refs,
+            page_start=pg_start,
+            page_end=pg_end,
+            token_count=tok,
+        ))
 
     # Propagate section_path: articles without a path inherit from previous
     prev_path = ""
     prev_mihwar = ""
     for c in chunks:
-        if c.chunk_type != "article":
+        if c.chunk_type not in ("article", "article_subchunk"):
             continue
-        # Current محور
         cur_mihw = c.section_path.split(" > ")[0] if " > " in c.section_path else c.section_path
         if not c.section_path and prev_path:
             c.section_path = prev_path
@@ -461,6 +494,9 @@ def chunk_tables(
     page_map: list[tuple[int, int]],
     zone_start: int,
     max_tokens: int,
+    doc_title: str = "",
+    doc_year: Optional[str] = None,
+    source_file: str = "",
 ) -> list[Chunk]:
     chunks = []
     zone_lines = lines[zone_start:]
@@ -476,6 +512,9 @@ def chunk_tables(
         if text.strip():
             chunks.append(Chunk(
                 chunk_id=str(uuid.uuid4()), chunk_type="schedule_table",
+                document_title=doc_title,
+                document_year=doc_year,
+                source_file=source_file,
                 zone="budget_table", text=text.strip(),
                 page_start=page_at(zone_start, page_map),
                 page_end=page_at(zone_start + len(zone_lines), page_map),
@@ -497,6 +536,9 @@ def chunk_tables(
             chunks.append(Chunk(
                 chunk_id=str(uuid.uuid4()),
                 chunk_type="schedule_table",
+                document_title=doc_title,
+                document_year=doc_year,
+                source_file=source_file,
                 zone="budget_table",
                 schedule_name=s_name,
                 text=part.strip(),
@@ -565,32 +607,58 @@ def _split_subtotals(lines_list: list[str], max_tokens: int) -> list[str]:
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def run(input_path="ocr_output.html", output_path="chunks_graphrag.json",
-        max_table_tokens=1000, max_article_tokens=1000):
-    print(f"Loading {input_path}...")
-    lines, page_map, md_heading_lines = load(input_path)
-    print(f"  {len(lines)} lines, {len(page_map)} page markers, {len(md_heading_lines)} md-heading lines")
+def _collect_input_files(input_path: str | None, input_dir: str | None) -> list[str]:
+    """Resolve input HTML files from --input or --input-dir."""
+    files: list[str] = []
+    if input_dir:
+        pattern = str(Path(input_dir) / "*.html")
+        files = sorted(glob.glob(pattern))
+    elif input_path:
+        if "*" in input_path:
+            files = sorted(glob.glob(input_path))
+        else:
+            files = [input_path]
+    return [f for f in files if Path(f).is_file()]
+
+
+def process_single_file(input_path: str, max_table_tokens: int,
+                        max_article_tokens: int) -> list[Chunk]:
+    """Process one OCR HTML file and return its chunks."""
+    source_file = Path(input_path).name
+    print(f"\n{'='*60}")
+    print(f"Processing: {source_file}")
+    print(f"{'='*60}")
+
+    lines, page_map, md_heading_lines, doc_title, doc_year = load(input_path)
+    print(f"  {len(lines)} lines, {len(page_map)} page markers")
+    print(f"  Title: {doc_title[:80] or '(not detected)'}")
+    print(f"  Year:  {doc_year or '(not detected)'}")
 
     zone_boundary = find_zone_boundary(lines)
     print(f"  Zone boundary at line {zone_boundary}")
 
-    # Classify lines (no heading detection — all content stays)
     classified = classify_lines(lines, zone_boundary)
 
-    # Debug counts
     types = {}
     for c in classified:
         types[c["type"]] = types.get(c["type"], 0) + 1
     print(f"  Line types: {types}")
 
     # Build law chunks
-    print("Chunking law text...")
-    law_chunks = build_law_chunks(lines, classified, page_map, zone_boundary, max_article_tokens, md_heading_lines)
+    print("  Chunking law text...")
+    law_chunks = build_law_chunks(
+        lines, classified, page_map, zone_boundary, max_article_tokens,
+        md_heading_lines, doc_title=doc_title, doc_year=doc_year,
+        source_file=source_file,
+    )
     print(f"  {len(law_chunks)} law chunks")
 
     # Budget tables
-    print("Chunking budget tables...")
-    table_chunks = chunk_tables(lines, page_map, zone_boundary, max_table_tokens)
+    print("  Chunking budget tables...")
+    table_chunks = chunk_tables(
+        lines, page_map, zone_boundary, max_table_tokens,
+        doc_title=doc_title, doc_year=doc_year, source_file=source_file,
+    )
     print(f"  {len(table_chunks)} table chunks")
 
     all_chunks = law_chunks + table_chunks
@@ -598,7 +666,7 @@ def run(input_path="ocr_output.html", output_path="chunks_graphrag.json",
     # Stats
     tokens = [c.token_count for c in all_chunks]
     if tokens:
-        print(f"\nTotal: {len(all_chunks)} chunks, {sum(tokens)} tokens")
+        print(f"  Total: {len(all_chunks)} chunks, {sum(tokens)} tokens")
         print(f"  min={min(tokens)} max={max(tokens)} avg={sum(tokens)//len(tokens)}")
 
     # Article completeness
@@ -612,9 +680,34 @@ def run(input_path="ocr_output.html", output_path="chunks_graphrag.json",
         full = set(range(min(art_nums), max(art_nums) + 1))
         missing = sorted(full - art_nums)
         if missing:
-            print(f"\n  WARNING: Missing articles: {missing}")
+            print(f"  WARNING: Missing articles: {missing}")
         else:
-            print(f"\n  Articles {min(art_nums)}-{max(art_nums)}: complete ✓")
+            print(f"  Articles {min(art_nums)}-{max(art_nums)}: complete ✓")
+
+    return all_chunks
+
+
+def run(input_path="ocr_output.html", output_path="chunks_graphrag.json",
+        max_table_tokens=1000, max_article_tokens=1000, input_dir=None):
+    files = _collect_input_files(input_path, input_dir)
+    if not files:
+        print(f"ERROR: No HTML files found (input={input_path}, input_dir={input_dir})")
+        return
+
+    print(f"Found {len(files)} input file(s): {[Path(f).name for f in files]}")
+
+    all_chunks: list[Chunk] = []
+    for fpath in files:
+        chunks = process_single_file(fpath, max_table_tokens, max_article_tokens)
+        all_chunks.extend(chunks)
+
+    # Overall stats
+    print(f"\n{'='*60}")
+    print(f"TOTAL: {len(all_chunks)} chunks from {len(files)} file(s)")
+    tokens = [c.token_count for c in all_chunks]
+    if tokens:
+        print(f"  Total tokens: {sum(tokens)}")
+        print(f"  min={min(tokens)} max={max(tokens)} avg={sum(tokens)//len(tokens)}")
 
     # Write
     out = [asdict(c) for c in all_chunks]
@@ -624,12 +717,28 @@ def run(input_path="ocr_output.html", output_path="chunks_graphrag.json",
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--input", default="ocr_output.html")
+    p.add_argument("--input", default=None,
+                   help="Single HTML file or glob pattern (e.g. 'OCR_Law/*.html')")
+    p.add_argument("--input-dir", default=None,
+                   help="Directory containing OCR HTML files (e.g. 'OCR_Law')")
     p.add_argument("--output", default="chunks_graphrag.json")
     p.add_argument("--max-table-tokens", type=int, default=1000)
     p.add_argument("--max-article-tokens", type=int, default=1000)
-    run(p.parse_args().input, p.parse_args().output,
-        p.parse_args().max_table_tokens, p.parse_args().max_article_tokens)
+    args = p.parse_args()
+
+    # Default: look for OCR_Law directory, fall back to single file
+    input_path = args.input
+    input_dir = args.input_dir
+    if not input_path and not input_dir:
+        if Path("OCR_Law").is_dir():
+            input_dir = "OCR_Law"
+        else:
+            input_path = "ocr_output.html"
+
+    run(input_path=input_path, output_path=args.output,
+        max_table_tokens=args.max_table_tokens,
+        max_article_tokens=args.max_article_tokens,
+        input_dir=input_dir)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,10 @@ Chunker for مذكرة عامة (general notes / circulars) — Arabic OCR'd HTM
 This handles documents structured by numbered sections (1., 2., 3...),
 sub-sections (أ, ب), and Roman numerals (I, II, III) rather than فصل articles.
 
+Supports multiple OCR HTML files in a directory — each file is a separate
+document.  The document year is auto-detected from the title line
+(e.g.  مذكرة عامة عدد 02 لسنة 2026).
+
 Approach:
   1. Parse document into sections using line-by-line scanning
   2. Detect section boundaries from numbered patterns and standalone short lines
@@ -14,11 +18,12 @@ Approach:
 
 Usage:
     python chunk_notes.py
+    python chunk_notes.py --input-dir OCR_Notes --output chunks_notes.json
     python chunk_notes.py --input ocr_output_notes.html --output chunks_notes.json
 """
 
 from __future__ import annotations
-import argparse, json, re, uuid
+import argparse, glob, json, re, uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
@@ -38,6 +43,9 @@ RE_LAW_REF = re.compile(
     r"(?:القانون|المرسوم|الأمر|الفصل)\s+(?:عدد\s+)?\d+\s+(?:لسنة|من)", re.DOTALL
 )
 
+# Year detection from title:  مذكرة عامة عدد 02 لسنة 2026
+RE_NOTE_YEAR = re.compile(r"لسنة\s+(\d{4})")
+
 
 # ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +54,8 @@ class Chunk:
     chunk_id: str = ""
     chunk_type: str = ""           # "section", "summary", "preamble", "signature"
     document_title: str = ""
+    document_year: Optional[str] = None
+    source_file: str = ""
     section_path: str = ""
     section_number: Optional[str] = None
     text: str = ""
@@ -101,13 +111,21 @@ class ParsedLine:
     page: int
 
 
-def load_and_parse(path: str) -> tuple[list[ParsedLine], str]:
-    """Load HTML, parse each line, track pages. Return (parsed_lines, doc_title)."""
+def detect_year(text: str) -> Optional[str]:
+    """Extract the year from a note title like  مذكرة عامة عدد 02 لسنة 2026."""
+    m = RE_NOTE_YEAR.search(text)
+    return m.group(1) if m else None
+
+
+def load_and_parse(path: str) -> tuple[list[ParsedLine], str, Optional[str]]:
+    """Load HTML, parse each line, track pages.
+    Return (parsed_lines, doc_title, document_year)."""
     raw_lines = Path(path).read_text(encoding="utf-8").split("\n")
 
     parsed = []
     current_page = 1
     doc_title = ""
+    doc_year: Optional[str] = None
 
     for i, raw in enumerate(raw_lines):
         # Page break
@@ -131,9 +149,20 @@ def load_and_parse(path: str) -> tuple[list[ParsedLine], str]:
         elif RE_FOOTER.match(stripped):
             is_noise = True
 
-        # Capture document title from first h1
-        if md_level == 1 and not doc_title:
-            doc_title = stripped
+        # Capture document title from first h1 or first line containing مذكرة
+        if not doc_title:
+            if md_level == 1:
+                doc_title = stripped
+            elif "مذكرة" in stripped and "عامة" in stripped:
+                doc_title = stripped
+
+        # Detect year from title or early lines (first 20 lines)
+        if doc_year is None and i < 20:
+            # Normalise stretched letters:  مـــذكـــرة → مذكرة
+            normalised = re.sub(r"ـ+", "", stripped)
+            year_candidate = detect_year(normalised)
+            if year_candidate:
+                doc_year = year_candidate
 
         parsed.append(ParsedLine(
             idx=i, raw=raw, text=text,
@@ -141,7 +170,10 @@ def load_and_parse(path: str) -> tuple[list[ParsedLine], str]:
             page=current_page,
         ))
 
-    return parsed, doc_title
+    # Normalise title (remove stretching)
+    doc_title = re.sub(r"ـ+", "", doc_title)
+
+    return parsed, doc_title, doc_year
 
 
 # ─── Section detection ────────────────────────────────────────────────────────
@@ -195,6 +227,8 @@ def build_chunks(
     parsed: list[ParsedLine],
     sections: list[Section],
     doc_title: str,
+    doc_year: Optional[str],
+    source_file: str,
     max_tokens: int,
 ) -> list[Chunk]:
     """Build one chunk per section. All text between sections goes into the chunk."""
@@ -208,6 +242,8 @@ def build_chunks(
                 chunk_id=str(uuid.uuid4()),
                 chunk_type="section",
                 document_title=doc_title,
+                document_year=doc_year,
+                source_file=source_file,
                 text=all_text,
                 cross_references=extract_refs(all_text),
                 page_start=1,
@@ -281,6 +317,8 @@ def build_chunks(
                     chunk_id=str(uuid.uuid4()),
                     chunk_type=chunk_type,
                     document_title=doc_title,
+                    document_year=doc_year,
+                    source_file=source_file,
                     section_path=section_path,
                     section_number=f"{sec.number}_part{pi}" if sec.number else f"part{pi}",
                     text=part,
@@ -294,6 +332,8 @@ def build_chunks(
                 chunk_id=str(uuid.uuid4()),
                 chunk_type=chunk_type,
                 document_title=doc_title,
+                document_year=doc_year,
+                source_file=source_file,
                 section_path=section_path,
                 section_number=sec.number or None,
                 text=text,
@@ -328,11 +368,31 @@ def _split_section(text: str, max_tokens: int) -> list[str]:
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def run(input_path="ocr_output_notes.html", output_path="chunks_notes.json",
-        max_tokens=1500):
-    print(f"Loading {input_path}...")
-    parsed, doc_title = load_and_parse(input_path)
-    print(f"  {len(parsed)} lines, title: {doc_title[:60]}")
+def _collect_input_files(input_path: str, input_dir: str | None) -> list[str]:
+    """Resolve input HTML files from --input or --input-dir."""
+    files: list[str] = []
+    if input_dir:
+        pattern = str(Path(input_dir) / "*.html")
+        files = sorted(glob.glob(pattern))
+    elif input_path:
+        # Single file or glob pattern
+        if "*" in input_path:
+            files = sorted(glob.glob(input_path))
+        else:
+            files = [input_path]
+    return [f for f in files if Path(f).is_file()]
+
+
+def process_single_file(input_path: str, max_tokens: int) -> list[Chunk]:
+    """Process one OCR HTML file and return its chunks."""
+    source_file = Path(input_path).name
+    print(f"\n{'='*60}")
+    print(f"Processing: {source_file}")
+    print(f"{'='*60}")
+
+    parsed, doc_title, doc_year = load_and_parse(input_path)
+    print(f"  {len(parsed)} lines, title: {doc_title[:80]}")
+    print(f"  Detected year: {doc_year or '(not found)'}")
 
     non_noise = sum(1 for pl in parsed if not pl.is_noise)
     print(f"  {non_noise} content lines")
@@ -344,8 +404,8 @@ def run(input_path="ocr_output_notes.html", output_path="chunks_notes.json",
         print(f"    L{s.level} [{s.number or '-':>5s}] {s.heading[:70]}")
 
     # Build chunks
-    print("\nChunking...")
-    chunks = build_chunks(parsed, sections, doc_title, max_tokens)
+    print("\n  Chunking...")
+    chunks = build_chunks(parsed, sections, doc_title, doc_year, source_file, max_tokens)
     print(f"  {len(chunks)} chunks")
 
     # Stats
@@ -354,27 +414,66 @@ def run(input_path="ocr_output_notes.html", output_path="chunks_notes.json",
         print(f"  Total tokens: {sum(tokens)}")
         print(f"  min={min(tokens)} max={max(tokens)} avg={sum(tokens)//len(tokens)}")
 
-    # Verify no text dropped — compare total chars
+    # Verify no text dropped
     all_content = "\n".join(pl.text for pl in parsed if not pl.is_noise)
     all_chunks_text = "\n".join(c.text for c in chunks)
     raw_chars = len(clean_text(all_content))
     chunk_chars = len(all_chunks_text)
     ratio = chunk_chars / raw_chars * 100 if raw_chars > 0 else 0
-    print(f"\n  Text retention: {chunk_chars}/{raw_chars} chars ({ratio:.1f}%)")
+    print(f"  Text retention: {chunk_chars}/{raw_chars} chars ({ratio:.1f}%)")
+
+    return chunks
+
+
+def run(input_path="ocr_output_notes.html", output_path="chunks_notes.json",
+        max_tokens=1500, input_dir=None):
+    files = _collect_input_files(input_path, input_dir)
+    if not files:
+        print(f"ERROR: No HTML files found (input={input_path}, input_dir={input_dir})")
+        return
+
+    print(f"Found {len(files)} input file(s): {[Path(f).name for f in files]}")
+
+    all_chunks: list[Chunk] = []
+    for fpath in files:
+        chunks = process_single_file(fpath, max_tokens)
+        all_chunks.extend(chunks)
+
+    # Overall stats
+    print(f"\n{'='*60}")
+    print(f"TOTAL: {len(all_chunks)} chunks from {len(files)} file(s)")
+    tokens = [c.token_count for c in all_chunks]
+    if tokens:
+        print(f"  Total tokens: {sum(tokens)}")
+        print(f"  min={min(tokens)} max={max(tokens)} avg={sum(tokens)//len(tokens)}")
 
     # Write
-    out = [asdict(c) for c in chunks]
+    out = [asdict(c) for c in all_chunks]
     Path(output_path).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nWritten to {output_path}")
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--input", default="ocr_output_notes.html")
+    p.add_argument("--input", default=None,
+                   help="Single HTML file or glob pattern (e.g. 'OCR_Notes/*.html')")
+    p.add_argument("--input-dir", default=None,
+                   help="Directory containing OCR HTML files (e.g. 'OCR_Notes')")
     p.add_argument("--output", default="chunks_notes.json")
     p.add_argument("--max-tokens", type=int, default=1500)
     args = p.parse_args()
-    run(args.input, args.output, args.max_tokens)
+
+    # Default: look for OCR_Notes directory, fall back to single file
+    input_path = args.input
+    input_dir = args.input_dir
+    if not input_path and not input_dir:
+        if Path("OCR_Notes").is_dir():
+            input_dir = "OCR_Notes"
+        else:
+            input_path = "ocr_output_notes.html"
+
+    run(input_path=input_path, output_path=args.output,
+        max_tokens=args.max_tokens, input_dir=input_dir)
 
 
 if __name__ == "__main__":

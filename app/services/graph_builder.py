@@ -693,11 +693,7 @@ def main():
 
     # Embeddings
     embeddings: Dict[str, list] = {}
-    if not args.skip_embeddings:
-        print("\nGenerating embeddings …")
-        embeddings = generate_embeddings(law_chunks + note_chunks, args.embed_model)
-    else:
-        print("\n(skipping embeddings)")
+    print("\n(skipping embeddings)")
 
     # Build graph
     print("\nConnecting to Neo4j …")
@@ -710,8 +706,8 @@ def main():
         gb.create_schema()
 
         print("\n[2/9] Chunk nodes")
-        gb.insert_chunks(law_chunks,  source="law",   embeddings=embeddings)
-        gb.insert_chunks(note_chunks, source="notes", embeddings=embeddings)
+        gb.insert_chunks(law_chunks,  source="law",   embeddings=None)
+        gb.insert_chunks(note_chunks, source="notes", embeddings=None)
 
         print("\n[3/9] Entity nodes (source-aware)")
         gb.insert_entities(law_chunks, note_chunks)
@@ -734,13 +730,7 @@ def main():
         gb.create_part_of(law_chunks, note_chunks)
 
         print("\n[9/9] Embeddings + SIMILAR_TO")
-        if embeddings:
-            gb.store_embeddings(embeddings)
-            dims = len(next(iter(embeddings.values())))
-            gb.create_vector_index(dimensions=dims)
-            gb.create_similar_to(threshold=0.78, max_neighbors=5)
-        else:
-            print("  (skipped — run embed_graph.py on Modal to add embeddings)")
+        print("  (skipped — run embed_graph.py on Modal to add embeddings)")
 
         gb.stats()
         print("\n✅  Graph build complete!")

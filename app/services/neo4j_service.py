@@ -21,8 +21,8 @@ def _get_neo4j_config() -> tuple[str, str, str]:
     """Read Neo4j config from environment (set by Modal secrets)."""
     return (
         os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-        os.environ.get("NEO4J_USER", "neo4j"),
-        os.environ.get("NEO4J_PASSWORD", ""),
+        os.environ.get("NEO4J_USER", "edd28cb4"),
+        os.environ.get("NEO4J_PASSWORD", "ybqRbrL4qp6nBDnAPE8rPsRY0aLyOZcQjMbkvFLJuo8"),
     )
 
 
