@@ -22,7 +22,7 @@ Usage:
     --note-chunks chunks_notes.json \
     --neo4j-uri   bolt://localhost:7687 \
     --neo4j-user  neo4j \
-    --neo4j-password password123
+    --neo4j-password "$NEO4J_PASSWORD"
 
   Add --clear to wipe the graph before building.
   Add --skip-embeddings to skip vector embedding generation.
@@ -30,9 +30,14 @@ Usage:
 
 import json
 import re
+import os
 import argparse
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Set
+
+from app.config import load_environment
+
+load_environment()
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -676,9 +681,9 @@ def main():
     ap = argparse.ArgumentParser(description="Build Neo4j knowledge graph for Graph RAG")
     ap.add_argument("--law-chunks",      default="chunks_graphrag.json")
     ap.add_argument("--note-chunks",     default="chunks_notes.json")
-    ap.add_argument("--neo4j-uri",       default="neo4j+s://f6b29f07.databases.neo4j.io")
-    ap.add_argument("--neo4j-user",      default="neo4j")
-    ap.add_argument("--neo4j-password",  default="h9lAbhKlanyl_zahfllUTrNZ82ADTNpbcntqgAyBAsU")
+    ap.add_argument("--neo4j-uri",       default=os.environ.get("NEO4J_URI", "bolt://localhost:7687"))
+    ap.add_argument("--neo4j-user",      default=os.environ.get("NEO4J_USER", "neo4j"))
+    ap.add_argument("--neo4j-password",  default=os.environ.get("NEO4J_PASSWORD", ""))
     ap.add_argument("--embed-model",     default="intfloat/multilingual-e5-base")
     ap.add_argument("--skip-embeddings", action="store_true")
     ap.add_argument("--clear",           action="store_true", help="Wipe graph first")

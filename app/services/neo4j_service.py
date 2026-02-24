@@ -12,6 +12,10 @@ from typing import Any
 
 from neo4j import GraphDatabase, Driver
 
+from app.config import load_environment
+
+load_environment()
+
 log = logging.getLogger(__name__)
 
 _driver: Driver | None = None
@@ -19,11 +23,12 @@ _driver: Driver | None = None
 
 def _get_neo4j_config() -> tuple[str, str, str]:
     """Read Neo4j config from environment (set by Modal secrets)."""
-    return (
-        os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-        os.environ.get("NEO4J_USER", "edd28cb4"),
-        os.environ.get("NEO4J_PASSWORD", "ybqRbrL4qp6nBDnAPE8rPsRY0aLyOZcQjMbkvFLJuo8"),
-    )
+    uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    user = os.environ.get("NEO4J_USER", "neo4j")
+    password = os.environ.get("NEO4J_PASSWORD", "")
+    if not password:
+        log.warning("NEO4J_PASSWORD is not set; Neo4j connectivity may fail.")
+    return uri, user, password
 
 
 def get_driver() -> Driver:

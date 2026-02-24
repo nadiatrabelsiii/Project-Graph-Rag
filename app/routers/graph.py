@@ -11,6 +11,7 @@ from typing import Dict
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 
+from app.config import load_environment
 from app.models import (
     GraphBuildRequest,
     GraphBuildResponse,
@@ -19,6 +20,8 @@ from app.models import (
 )
 from app.services.neo4j_service import cypher, check_connection
 from app.services.rag_agent import get_agent
+
+load_environment()
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Graph"])
