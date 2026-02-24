@@ -2,7 +2,7 @@
 
 This repository is the **backend** of an **agentic Graph RAG** project focused on Tunisian legal and tax documents (laws + explanatory notes).
 
-It is designed to ingest documents (including data sourced from `jibeya.com`), build a Neo4j knowledge graph, and serve grounded Arabic answers through an API.
+It is designed to ingest documents (including data sourced from `https://jibaya.tn/documentation/`), build a Neo4j knowledge graph, and serve grounded Arabic answers through an API.
 
 ## What This Project Is About
 
@@ -233,6 +233,6 @@ requirements.txt
 
 ## Note on Data Usage
 
-Before large-scale scraping or redistribution of materials from `jibeya.com`, verify legal/terms-of-use requirements for that source.
+Before large-scale scraping or redistribution of materials from `https://jibaya.tn/documentation/`, verify legal/terms-of-use requirements for that source.
 
 Project realised by: Nadia Trabelsi
