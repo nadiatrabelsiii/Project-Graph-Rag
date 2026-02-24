@@ -31,7 +31,7 @@ async def chunk_document(req: ChunkRequest):
     """
     Chunk an OCR'd HTML file into Graph RAG–ready JSON chunks.
 
-    - doc_type='law'   → uses chunk_graphrag.py logic
+    - doc_type='law'   → uses chunk_law.py logic
     - doc_type='notes' → uses chunk_notes.py logic
     - doc_type='auto'  → auto-detect from filename
     """
@@ -61,7 +61,8 @@ async def chunk_document(req: ChunkRequest):
             run_law_chunker(
                 input_path=str(input_path),
                 output_path=output_path,
-                max_tokens=req.max_tokens,
+                max_table_tokens=req.max_tokens,
+                max_article_tokens=req.max_tokens,
             )
     except Exception as exc:
         log.exception("Chunking failed")

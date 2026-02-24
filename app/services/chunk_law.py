@@ -16,9 +16,9 @@ document.  The document title and year are auto-detected from the header
 NO markdown # dependency — stripped on load.
 
 Usage:
-    python chunk_graphrag.py
-    python chunk_graphrag.py --input-dir OCR_Law --output chunks_graphrag.json
-    python chunk_graphrag.py --input ocr_output.html --output chunks.json
+    python app/services/chunk_law.py
+    python app/services/chunk_law.py --input-dir OCR_Law --output chunks_graphrag.json
+    python app/services/chunk_law.py --input ocr_output.html --output chunks.json
 """
 
 from __future__ import annotations

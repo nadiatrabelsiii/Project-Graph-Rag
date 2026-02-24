@@ -55,6 +55,24 @@ class ChunkResponse(BaseModel):
     chunks: list[ChunkInfo] = []
 
 
+# ─── OCR ──────────────────────────────────────────────────────────────────────
+
+class OCRProcessRequest(BaseModel):
+    input_pdf_path: str = Field(..., description="Path to input PDF file")
+    dpi: int = Field(170, ge=72, le=600, description="Rasterization DPI for PDF pages")
+    output_html_path: str = Field("", description="Optional OCR HTML output path (auto if empty)")
+    output_json_path: str = Field("", description="Optional OCR JSON output path (auto if empty)")
+
+
+class OCRProcessResponse(BaseModel):
+    source_file: str
+    page_count: int
+    total_text_blocks: int = 0
+    total_tables: int = 0
+    output_html_path: str = ""
+    output_json_path: str = ""
+
+
 # ─── Graph ────────────────────────────────────────────────────────────────────
 
 class GraphBuildRequest(BaseModel):

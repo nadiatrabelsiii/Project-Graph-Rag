@@ -20,6 +20,10 @@ Test locally:
 from __future__ import annotations
 import modal
 
+from app.config import load_environment
+
+load_environment()
+
 # ═══════════════════════════════════════════════════════════════════════
 # Modal configuration
 # ═══════════════════════════════════════════════════════════════════════
@@ -28,16 +32,31 @@ app = modal.App("graph-rag-api")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
+    .apt_install(
+        "poppler-utils",
+        "libgl1",
+        "libglib2.0-0",
+        "libgomp1",
+        "libsm6",
+        "libxext6",
+        "libxrender1",
+    )
     .pip_install(
         # FastAPI
         "fastapi>=0.115.0",
         "pydantic>=2.0",
+        "python-dotenv>=1.0.1",
         # ML / LLM
         "torch>=2.4.0",
         "transformers>=4.46.0",
         "accelerate>=0.34.0",
         "sentencepiece",
         "sentence-transformers>=3.0.0",
+        # OCR
+        "pdf2image>=1.17.0",
+        "Pillow>=10.0.0",
+        "paddlepaddle>=3.0.0",
+        "paddleocr>=3.0.0",
         # Agent
         "langgraph>=0.2.53",
         "langchain-core>=0.3.0",
