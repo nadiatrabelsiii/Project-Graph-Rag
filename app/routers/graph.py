@@ -26,9 +26,6 @@ load_environment()
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Graph"])
 
-
-# ─── Graph build (runs in background) ────────────────────────────────────────
-
 def _build_graph_task(
     law_chunks: list[dict],
     note_chunks: list[dict],
@@ -39,11 +36,12 @@ def _build_graph_task(
     from app.services.graph_builder import GraphBuilder, generate_embeddings
 
     uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-    user = os.environ.get("NEO4J_USER", "neo4j")
+    user = os.environ.get("NEO4J_USER") or os.environ.get("NEO4J_USERNAME", "neo4j")
     password = os.environ.get("NEO4J_PASSWORD", "")
+    database = os.environ.get("NEO4J_DATABASE") or None
     embed_model = os.environ.get("EMBED_MODEL_ID", "intfloat/multilingual-e5-base")
 
-    gb = GraphBuilder(uri, user, password)
+    gb = GraphBuilder(uri, user, password, database=database)
     try:
         if clear:
             gb.clear()
@@ -106,8 +104,6 @@ async def build_graph(req: GraphBuildRequest, bg: BackgroundTasks):
     )
 
 
-# ─── Stats ────────────────────────────────────────────────────────────────────
-
 @router.get("/graph/stats", response_model=GraphStatsResponse)
 async def graph_stats():
     """Return current graph statistics (node/edge counts)."""
@@ -138,9 +134,6 @@ async def graph_stats():
         )
     except Exception as exc:
         raise HTTPException(500, f"Stats query error: {exc}")
-
-
-# ─── Health ───────────────────────────────────────────────────────────────────
 
 @router.get("/health", response_model=HealthResponse)
 async def health():

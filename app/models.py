@@ -6,9 +6,6 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Optional
 
-
-# ─── Query ────────────────────────────────────────────────────────────────────
-
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="User question (Arabic or English)")
 
@@ -28,9 +25,6 @@ class QueryResponse(BaseModel):
     intent: str = ""
     needs_clarification: bool = False
     clarification_question: str = ""
-
-
-# ─── Chunking ─────────────────────────────────────────────────────────────────
 
 class ChunkRequest(BaseModel):
     input_path: str = Field(..., description="Path to the OCR HTML file")
@@ -54,9 +48,6 @@ class ChunkResponse(BaseModel):
     output_path: str
     chunks: list[ChunkInfo] = []
 
-
-# ─── OCR ──────────────────────────────────────────────────────────────────────
-
 class OCRProcessRequest(BaseModel):
     input_pdf_path: str = Field(..., description="Path to input PDF file")
     dpi: int = Field(170, ge=72, le=600, description="Rasterization DPI for PDF pages")
@@ -71,9 +62,6 @@ class OCRProcessResponse(BaseModel):
     total_tables: int = 0
     output_html_path: str = ""
     output_json_path: str = ""
-
-
-# ─── Graph ────────────────────────────────────────────────────────────────────
 
 class GraphBuildRequest(BaseModel):
     law_chunks_path: str = "chunks_graphrag.json"
@@ -94,9 +82,6 @@ class GraphStatsResponse(BaseModel):
     entities: int = 0
     relationships: int = 0
     relationship_types: dict[str, int] = {}
-
-
-# ─── Health ───────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):
     status: str = "ok"

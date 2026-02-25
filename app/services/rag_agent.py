@@ -5,7 +5,7 @@ Provides an agentic pipeline with strong grounding controls:
   - multi-strategy graph retrieval
   - hybrid relevance scoring (LLM + lexical heuristics)
   - citation-constrained generation
-  - Arabic-output enforcement
+  - French-output enforcement
   - safe fallback on weak evidence
 """
 
@@ -86,70 +86,70 @@ BATCH_EVAL_PROMPT = """\
 JSON فقط:"""
 
 GENERATE_PROMPT = """\
-أنت مستشار قانوني تونسي دقيق.
+Vous etes un conseiller juridique tunisien precis.
 
-أجب على السؤال اعتمادًا حصريًا على المراجع (S1..Sn) أدناه.
+Repondez a la question en vous basant UNIQUEMENT sur les references (S1..Sn) ci-dessous.
 
-قواعد صارمة:
-1) أجب باللغة العربية فقط.
-2) لا تستخدم أي معلومة غير موجودة في المراجع.
-3) كل فقرة يجب أن تتضمن إحالة مرجعية مثل [S1] أو [S2].
-4) إذا كانت الأدلة غير كافية، صرّح بذلك بوضوح واطلب مرجعًا أدق.
-5) لا تخمّن مواد قانونية أو سنوات أو أرقام فصول غير مذكورة في المراجع.
+Regles strictes:
+1) Repondez uniquement en francais.
+2) N'ajoutez aucune information absente des references.
+3) Chaque paragraphe doit contenir au moins une citation [S#].
+4) Si les preuves sont insuffisantes, dites-le explicitement et demandez une reference plus precise.
+5) N'inventez pas des articles, annees ou numeros de lois.
 
-المراجع:
+References:
 {context}
 
-السؤال: {query}
+Question: {query}
 
-الإجابة العربية الموثقة:"""
+Reponse juridique en francais:"""
 
 CITATION_REWRITE_PROMPT = """\
-أعد صياغة الإجابة التالية باللغة العربية الفصحى فقط، مع إضافة إحالات [S#] في كل فقرة.
-لا تضف أي معلومة غير موجودة في المراجع.
+Reecrivez la reponse suivante en francais seulement, avec des citations [S#] dans chaque paragraphe.
+N'ajoutez aucune information en dehors des references.
 
-المراجع:
+References:
 {context}
 
-الإجابة الحالية:
+Reponse actuelle:
 {answer}
 
-الإجابة النهائية:"""
+Reponse finale:"""
 
-ARABIC_REWRITE_PROMPT = """\
-حوّل النص التالي إلى العربية الفصحى فقط مع الحفاظ على المعنى وعدم إضافة أي معلومات جديدة.
+FRENCH_REWRITE_PROMPT = """\
+Transformez le texte suivant en francais clair, sans changer le sens et sans ajouter de nouvelles informations.
 
-النص:
+Texte:
 {answer}
 
-النص العربي:"""
+Texte francais:"""
 
 GROUNDING_CHECK_PROMPT = """\
-تحقق من كون الإجابة مدعومة بالمراجع فقط.
-أجب JSON فقط:
+Verifiez que la reponse est supportee uniquement par les references.
+Repondez en JSON uniquement:
 {{
-  "grounded": true أو false,
-  "unsupported_claims": عدد الادعاءات غير المدعومة
+  "grounded": true or false,
+  "unsupported_claims": integer
 }}
 
-المراجع:
+References:
 {context}
 
-الإجابة:
+Reponse:
 {answer}
 """
 
 GROUNDED_REWRITE_PROMPT = """\
-أعد كتابة الإجابة التالية بحيث تكون مدعومة حصريًا بالمراجع المعطاة، وبالعربية فقط،
-ومع إحالات [S#] واضحة، ومن دون أي معلومة خارج المراجع.
+Reecrivez la reponse suivante pour qu'elle soit strictement fondee sur les references, en francais,
+avec des citations [S#], et sans information externe.
 
-المراجع:
+References:
 {context}
 
-الإجابة الحالية:
+Reponse actuelle:
 {answer}
 
-الإجابة المصححة:"""
+Reponse corrigee:"""
 
 
 # ─── RAG Agent class ──────────────────────────────────────────────────────────
@@ -259,6 +259,7 @@ class GraphRAGAgent:
 
     def _heuristic_relevance(self, query: str, chunk: dict) -> float:
         q_terms = self._query_terms(query)
+        q_years = set(self._extract_years(query))
         if not q_terms:
             return 0.0
 
@@ -276,6 +277,16 @@ class GraphRAGAgent:
         if chunk.get("source") == "law":
             score += 0.3
 
+        if q_years:
+            cy = str(chunk.get("document_year") or "")
+            if cy and cy in q_years:
+                score += 1.0
+            elif cy:
+                score -= 0.8
+
+        if chunk.get("_topic_overlap"):
+            score += min(1.2, 0.4 * float(chunk.get("_topic_overlap", 0)))
+
         # Bonus when chunk contains explicit legal reference requested by user.
         for ref in self._extract_reference_signals(query):
             if ref in text:
@@ -288,19 +299,22 @@ class GraphRAGAgent:
         return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
     @staticmethod
-    def _is_mostly_arabic(text: str) -> bool:
-        letters = re.findall(r"[A-Za-z\u0600-\u06FF]", text or "")
+    def _is_mostly_french(text: str) -> bool:
+        letters = re.findall(r"[A-Za-z\u00C0-\u017F\u0600-\u06FF]", text or "")
         if not letters:
             return True
-        arabic = re.findall(r"[\u0600-\u06FF]", "".join(letters))
-        return (len(arabic) / len(letters)) >= 0.75
+        joined = "".join(letters)
+        latin = re.findall(r"[A-Za-z\u00C0-\u017F]", joined)
+        arabic = re.findall(r"[\u0600-\u06FF]", joined)
+        latin_ratio = len(latin) / len(letters)
+        return latin_ratio >= 0.45 and len(latin) >= len(arabic)
 
-    def _enforce_arabic(self, answer: str) -> str:
-        if answer and self._is_mostly_arabic(answer) and not self._has_cjk(answer):
+    def _enforce_french(self, answer: str) -> str:
+        if answer and self._is_mostly_french(answer) and not self._has_cjk(answer):
             return answer
 
         rewritten = self._llm(
-            ARABIC_REWRITE_PROMPT.format(answer=answer),
+            FRENCH_REWRITE_PROMPT.format(answer=answer),
             max_tokens=900,
             temperature=0.0,
         )
@@ -339,7 +353,19 @@ class GraphRAGAgent:
             out.append(f"الفصل {m.group(1)}")
             out.append(f"فصل {m.group(1)}")
 
+        for m in re.finditer(r"(?:loi|decret|décret)\s+n?[°o]?\s*(\d+)\s*(?:de|/)\s*(\d{4})", lowered):
+            out.append(f"{m.group(1)} de {m.group(2)}")
+            out.append(f"{m.group(1)}/{m.group(2)}")
+
+        for m in re.finditer(r"article\s+(\d+)", lowered):
+            out.append(f"article {m.group(1)}")
+
         return list(dict.fromkeys(out))
+
+    @staticmethod
+    def _extract_years(text: str) -> list[str]:
+        years = re.findall(r"(19\d{2}|20\d{2})", text or "")
+        return list(dict.fromkeys(years))
 
     def _references_supported(self, query: str, chunks: list[dict]) -> bool:
         refs = self._extract_reference_signals(query)
@@ -355,6 +381,8 @@ class GraphRAGAgent:
         lowered = (text or "").lower()
         for m in re.finditer(r"(?:المرسوم|مرسوم|القانون|قانون)\s+عدد\s+(\d+)\s+لسنة\s+(\d{4})", lowered):
             pairs.append((m.group(1), m.group(2)))
+        for m in re.finditer(r"(?:loi|decret|décret)\s+n?[°o]?\s*(\d+)\s*(?:de|/)\s*(\d{4})", lowered):
+            pairs.append((m.group(1), m.group(2)))
         return list(dict.fromkeys(pairs))
 
     def _answer_mentions_required_refs(self, query: str, answer: str) -> bool:
@@ -362,7 +390,16 @@ class GraphRAGAgent:
         if not pairs:
             return True
         lowered_answer = (answer or "").lower()
-        return all(f"{num} لسنة {year}" in lowered_answer for num, year in pairs)
+        for num, year in pairs:
+            patterns = [
+                f"{num} لسنة {year}",
+                f"{num} de {year}",
+                f"n {num} de {year}",
+                f"{num}/{year}",
+            ]
+            if not any(p in lowered_answer for p in patterns):
+                return False
+        return True
 
     def _ensure_source_citations(self, answer: str, context: str) -> str:
         if self._has_source_citations(answer):
@@ -393,15 +430,17 @@ class GraphRAGAgent:
     def _safe_fallback_answer(sources: list[dict]) -> str:
         if not sources:
             return (
-                "لا تتوفر في قاعدة المعرفة الحالية نصوص قانونية كافية للإجابة بدقة على هذا السؤال. "
-                "يرجى تحديد مرجع أدق (رقم فصل/قانون/مرسوم) أو تزويدي بالنص القانوني المرتبط بالسؤال."
+                "La base de connaissances actuelle ne contient pas assez de references juridiques "
+                "pour repondre de facon fiable a cette question. "
+                "Veuillez preciser la reference (article/loi/decret) ou fournir le texte legal concerne."
             )
 
         refs = "، ".join(f"[S{s['index']}]" for s in sources[:3])
         return (
-            "المعطيات المتاحة غير كافية لاستخلاص جواب قانوني موثوق دون الاستناد إلى افتراضات خارج النصوص. "
-            f"المراجع المتوفرة حاليًا: {refs}. "
-            "يرجى تزويدي بمرجع قانوني أدق لاستكمال الإجابة بشكل صحيح."
+            "Les elements disponibles sont insuffisants pour produire une reponse juridique fiable "
+            "sans extrapolation hors references. "
+            f"References actuellement disponibles: {refs}. "
+            "Veuillez fournir une reference legale plus precise."
         )
 
     @staticmethod
@@ -422,11 +461,11 @@ class GraphRAGAgent:
         sources: list[dict] = []
 
         for i, c in enumerate(chunks, 1):
-            path = c.get("path") or c.get("section_path", "غير محدد")
-            label = "نص قانوني" if c.get("source") == "law" else "مذكرة توضيحية"
+            path = c.get("path") or c.get("section_path", "non specifie")
+            label = "Texte de loi" if c.get("source") == "law" else "Note explicative"
             txt = (c.get("text") or "")[:1400]
             context_parts.append(
-                f"S{i} | {label} | المسار: {path} | الصلة: {c.get('relevance_score', 0)}\n{txt}"
+                f"S{i} | {label} | chemin: {path} | pertinence: {c.get('relevance_score', 0)}\n{txt}"
             )
             sources.append({
                 "index": i,
@@ -436,7 +475,7 @@ class GraphRAGAgent:
                 "page_end": c.get("page_end"),
             })
 
-        context = "\n\n---\n\n".join(context_parts) if context_parts else "(لا توجد نصوص مرجعية)"
+        context = "\n\n---\n\n".join(context_parts) if context_parts else "(aucune reference disponible)"
         return context, sources
 
     # ── LangGraph nodes ────────────────────────────────────────────
@@ -462,6 +501,7 @@ class GraphRAGAgent:
     def _node_retrieve(self, state: AgentState) -> dict:
         """Multi-strategy retrieval from Neo4j knowledge graph."""
         seen: dict[str, dict] = {}
+        query_years = self._extract_years(state["query"])
 
         def _add(rows: list, is_direct: bool = False):
             for r in rows:
@@ -469,6 +509,11 @@ class GraphRAGAgent:
                     seen[r["id"]] = r
                     if is_direct:
                         r["_direct_hit"] = True
+                elif r.get("id") and r["id"] in seen and r.get("topic_overlap"):
+                    seen[r["id"]]["_topic_overlap"] = max(
+                        float(seen[r["id"]].get("_topic_overlap", 0)),
+                        float(r.get("topic_overlap", 0)),
+                    )
 
         # 0) Direct article lookup
         art_pat = re.compile(r'(?:فصل|article|مادة|الفصل)\s*(\d+)', re.IGNORECASE)
@@ -476,11 +521,14 @@ class GraphRAGAgent:
             for match in art_pat.finditer(src):
                 _add(cypher(
                     "MATCH (c:Chunk {article_number: $num, source: 'law'}) "
+                    "WHERE (size($years) = 0 OR c.document_year IN $years) "
                     "RETURN c.chunk_id AS id, c.text AS text, c.section_path AS path, "
                     "       c.chunk_type AS type, c.source AS source, "
+                    "       c.document_year AS document_year, "
                     "       c.page_start AS page_start, c.page_end AS page_end "
                     "LIMIT 3",
                     num=match.group(1),
+                    years=query_years,
                 ), is_direct=True)
 
         # 1) Entity-based retrieval
@@ -490,6 +538,7 @@ class GraphRAGAgent:
                 "WHERE e.name CONTAINS $ent "
                 "RETURN c.chunk_id AS id, c.text AS text, c.section_path AS path, "
                 "       c.chunk_type AS type, c.source AS source, "
+                "       c.document_year AS document_year, "
                 "       c.page_start AS page_start, c.page_end AS page_end "
                 "LIMIT 6",
                 ent=ent,
@@ -502,6 +551,7 @@ class GraphRAGAgent:
                 "WHERE e.name CONTAINS $concept "
                 "RETURN c.chunk_id AS id, c.text AS text, c.section_path AS path, "
                 "       c.chunk_type AS type, c.source AS source, "
+                "       c.document_year AS document_year, "
                 "       c.page_start AS page_start, c.page_end AS page_end "
                 "LIMIT 6",
                 concept=concept,
@@ -519,6 +569,7 @@ class GraphRAGAgent:
                     "RETURN node.chunk_id AS id, node.text AS text, "
                     "       node.section_path AS path, node.chunk_type AS type, "
                     "       node.source AS source, "
+                    "       node.document_year AS document_year, "
                     "       node.page_start AS page_start, node.page_end AS page_end, "
                     "       score "
                     "ORDER BY score DESC LIMIT 12",
@@ -536,6 +587,7 @@ class GraphRAGAgent:
                 "RETURN node.chunk_id AS id, node.text AS text, "
                 "       node.section_path AS path, node.chunk_type AS type, "
                 "       node.source AS source, "
+                "       node.document_year AS document_year, "
                 "       node.page_start AS page_start, node.page_end AS page_end, "
                 "       score",
                 emb=qemb,
@@ -543,7 +595,20 @@ class GraphRAGAgent:
         except Exception:
             pass
 
-        # 5) Graph expansion: EXPLAINS and RELATES_TO
+        # 5) Year-focused retrieval
+        for y in query_years[:3]:
+            _add(cypher(
+                "MATCH (c:Chunk) "
+                "WHERE c.document_year = $y "
+                "RETURN c.chunk_id AS id, c.text AS text, c.section_path AS path, "
+                "       c.chunk_type AS type, c.source AS source, "
+                "       c.document_year AS document_year, "
+                "       c.page_start AS page_start, c.page_end AS page_end "
+                "LIMIT 8",
+                y=y,
+            ))
+
+        # 6) Graph expansion: EXPLAINS, ABOUT_ARTICLE, RELATES_TO
         law_ids = [cid for cid, c in seen.items() if c.get("source") == "law"]
         for lid in law_ids[:5]:
             _add(cypher(
@@ -551,8 +616,34 @@ class GraphRAGAgent:
                 "RETURN note.chunk_id AS id, note.text AS text, "
                 "       note.section_path AS path, note.chunk_type AS type, "
                 "       note.source AS source, "
+                "       note.document_year AS document_year, "
                 "       note.page_start AS page_start, note.page_end AS page_end",
                 id=lid,
+            ))
+            _add(cypher(
+                "MATCH (note:Chunk)-[r:ABOUT_ARTICLE]->(law:Chunk {chunk_id: $id}) "
+                "RETURN note.chunk_id AS id, note.text AS text, "
+                "       note.section_path AS path, note.chunk_type AS type, "
+                "       note.source AS source, "
+                "       note.document_year AS document_year, "
+                "       note.page_start AS page_start, note.page_end AS page_end, "
+                "       r.topic_overlap AS topic_overlap "
+                "LIMIT 6",
+                id=lid,
+            ))
+
+        note_ids = [cid for cid, c in seen.items() if c.get("source") == "notes"]
+        for nid in note_ids[:5]:
+            _add(cypher(
+                "MATCH (note:Chunk {chunk_id: $id})-[r:ABOUT_ARTICLE]->(law:Chunk) "
+                "RETURN law.chunk_id AS id, law.text AS text, "
+                "       law.section_path AS path, law.chunk_type AS type, "
+                "       law.source AS source, "
+                "       law.document_year AS document_year, "
+                "       law.page_start AS page_start, law.page_end AS page_end, "
+                "       r.topic_overlap AS topic_overlap "
+                "LIMIT 6",
+                id=nid,
             ))
 
         for cid in list(seen.keys())[:8]:
@@ -561,25 +652,53 @@ class GraphRAGAgent:
                 "RETURN other.chunk_id AS id, other.text AS text, "
                 "       other.section_path AS path, other.chunk_type AS type, "
                 "       other.source AS source, "
+                "       other.document_year AS document_year, "
                 "       other.page_start AS page_start, other.page_end AS page_end "
                 "LIMIT 5",
                 id=cid,
             ))
 
-        # 6) Neighbor chunks (NEXT_CHUNK)
+        # 7) Neighbor chunks (NEXT_CHUNK)
         for cid in list(seen.keys())[:5]:
             _add(cypher(
                 "MATCH (c:Chunk {chunk_id: $id})-[:NEXT_CHUNK]->(nxt:Chunk) "
                 "RETURN nxt.chunk_id AS id, nxt.text AS text, "
                 "       nxt.section_path AS path, nxt.chunk_type AS type, "
                 "       nxt.source AS source, "
+                "       nxt.document_year AS document_year, "
                 "       nxt.page_start AS page_start, nxt.page_end AS page_end "
                 "UNION "
                 "MATCH (prv:Chunk)-[:NEXT_CHUNK]->(c:Chunk {chunk_id: $id}) "
                 "RETURN prv.chunk_id AS id, prv.text AS text, "
                 "       prv.section_path AS path, prv.chunk_type AS type, "
                 "       prv.source AS source, "
+                "       prv.document_year AS document_year, "
                 "       prv.page_start AS page_start, prv.page_end AS page_end",
+                id=cid,
+            ))
+
+        # 8) Topic two-hop + same-year document expansion
+        for cid in list(seen.keys())[:6]:
+            _add(cypher(
+                "MATCH (c:Chunk {chunk_id: $id})-[:HAS_TOPIC]->(t:Topic)<-[:HAS_TOPIC]-(other:Chunk) "
+                "WHERE other.chunk_id <> $id "
+                "RETURN other.chunk_id AS id, other.text AS text, "
+                "       other.section_path AS path, other.chunk_type AS type, "
+                "       other.source AS source, other.document_year AS document_year, "
+                "       other.page_start AS page_start, other.page_end AS page_end, "
+                "       1 AS topic_overlap "
+                "LIMIT 5",
+                id=cid,
+            ))
+            _add(cypher(
+                "MATCH (c:Chunk {chunk_id: $id})-[:IN_DOCUMENT]->(d:Document) "
+                "MATCH (d)-[:SAME_YEAR_AS]-(peer:Document) "
+                "MATCH (other:Chunk)-[:IN_DOCUMENT]->(peer) "
+                "RETURN other.chunk_id AS id, other.text AS text, "
+                "       other.section_path AS path, other.chunk_type AS type, "
+                "       other.source AS source, other.document_year AS document_year, "
+                "       other.page_start AS page_start, other.page_end AS page_end "
+                "LIMIT 5",
                 id=cid,
             ))
 
@@ -696,7 +815,7 @@ class GraphRAGAgent:
                 "sources": sources,
                 "evidence_strength": evidence_strength,
                 "needs_clarification": True,
-                "clarification_question": "يرجى تحديد الفصل أو القانون أو المرسوم المطلوب بدقة.",
+                "clarification_question": "Veuillez preciser l'article, la loi ou le decret exact.",
             }
 
         # If the user requested an explicit legal reference that is not present
@@ -707,7 +826,7 @@ class GraphRAGAgent:
                 "sources": sources,
                 "evidence_strength": 0,
                 "needs_clarification": True,
-                "clarification_question": "لم أجد المرجع القانوني المذكور داخل النصوص الحالية. يرجى تزويدي بالنص المرتبط به.",
+                "clarification_question": "La reference demandee n'a pas ete trouvee dans le corpus actuel. Merci de fournir le texte associe.",
             }
 
         prompt = GENERATE_PROMPT.format(context=context, query=state["query"])
@@ -715,7 +834,7 @@ class GraphRAGAgent:
 
         answer = self._ensure_source_citations(answer, context)
         answer = self._cleanup_answer(answer)
-        answer = self._enforce_arabic(answer)
+        answer = self._enforce_french(answer)
 
         grounded, _ = self._verify_grounding(answer, context)
         if not grounded:
@@ -726,7 +845,7 @@ class GraphRAGAgent:
             )
             answer = self._ensure_source_citations(answer, context)
             answer = self._cleanup_answer(answer)
-            answer = self._enforce_arabic(answer)
+            answer = self._enforce_french(answer)
 
             grounded, _ = self._verify_grounding(answer, context)
             if not grounded:
@@ -738,7 +857,7 @@ class GraphRAGAgent:
                 "sources": sources,
                 "evidence_strength": 0,
                 "needs_clarification": True,
-                "clarification_question": "الإجابة الحالية لا تغطي المرجع الرقمي المطلوب بدقة. يرجى تزويدي بالنص المرتبط به مباشرة.",
+                "clarification_question": "La reponse ne couvre pas correctement la reference numerique demandee. Merci de fournir le texte exact.",
             }
 
         if self._has_cjk(answer):
@@ -747,7 +866,7 @@ class GraphRAGAgent:
                 "sources": sources,
                 "evidence_strength": 0,
                 "needs_clarification": True,
-                "clarification_question": "تم اكتشاف مخرجات لغوية غير عربية. يرجى إعادة المحاولة بصياغة أكثر تحديدًا.",
+                "clarification_question": "Une sortie linguistique invalide a ete detectee. Veuillez reformuler la question de facon plus precise.",
             }
 
         return {
@@ -763,15 +882,15 @@ class GraphRAGAgent:
 
         weak = evidence_strength < MIN_EVIDENCE_STRENGTH
         missing_sources = len(sources) == 0
-        non_arabic = not self._is_mostly_arabic(response)
+        non_french = not self._is_mostly_french(response)
 
-        needs = weak or missing_sources or non_arabic
+        needs = weak or missing_sources or non_french
 
         clarification_question = ""
         if weak or missing_sources:
-            clarification_question = "يرجى تحديد المرجع القانوني بدقة (رقم الفصل/القانون/المرسوم)."
-        elif non_arabic:
-            clarification_question = "يرجى إعادة صياغة السؤال بالعربية القانونية للتأكد من دقة الجواب."
+            clarification_question = "Veuillez preciser la reference legale (article/loi/decret)."
+        elif non_french:
+            clarification_question = "Veuillez reformuler votre question; la reponse doit etre produite en francais."
 
         return {
             "needs_clarification": needs,
@@ -813,7 +932,7 @@ class GraphRAGAgent:
     def query(self, user_query: str) -> dict:
         """Run the full agentic Graph RAG pipeline."""
         if not self._ready:
-            return {"error": "Agent not ready — models still loading"}
+            return {"error": "Agent indisponible pour le moment — les modeles sont en cours de chargement."}
 
         initial: AgentState = {
             "query": user_query,
@@ -833,13 +952,21 @@ class GraphRAGAgent:
 
         result = self.agent.invoke(initial)
 
+        response = self._cleanup_answer(result.get("response", ""))
+        if response:
+            response = self._enforce_french(response)
+
+        clarification_question = self._cleanup_answer(result.get("clarification_question", ""))
+        if clarification_question:
+            clarification_question = self._enforce_french(clarification_question)
+
         return {
             "query": user_query,
-            "response": result.get("response", ""),
+            "response": response,
             "sources": result.get("sources", []),
             "intent": result.get("intent", ""),
             "needs_clarification": result.get("needs_clarification", False),
-            "clarification_question": result.get("clarification_question", ""),
+            "clarification_question": clarification_question,
         }
 
 

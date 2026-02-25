@@ -36,15 +36,58 @@ RE_MD_PREFIX = re.compile(r"^\s*(#{1,6})\s*")
 RE_PAGEBREAK = re.compile(r"<!--\s*PageBreak\s*\[(\d+)\]\s*-->")
 
 RE_FOOTER = re.compile(
-    r"^(?:صفحة\s+\d+|عدد\s+\d+|الرائد الرسمي للجمهورية التونسية\s*[-–].*|\d{1,3})$"
+    r"^(?:"
+    r"صفحة\s+\d+|"
+    r"عدد\s+\d+|"
+    r"الرائد الرسمي للجمهورية التونسية\s*[-–].*|"
+    r"page\s+\d+|"
+    r"journal officiel de la republique tunisienne.*|"
+    r"n[°oº]\s*\d+|"
+    r"\d{1,3}"
+    r")$",
+    re.IGNORECASE,
 )
 
 RE_LAW_REF = re.compile(
     r"(?:القانون|المرسوم|الأمر|الفصل)\s+(?:عدد\s+)?\d+\s+(?:لسنة|من)", re.DOTALL
 )
+RE_LAW_REF_FR = re.compile(
+    r"(?:loi|decret|décret|décret-loi)\s*(?:n[°oº]?\s*[\d\-–—]+)?\s*(?:du|de)?\s*[^,\n]*?(?:19\d{2}|20\d{2})",
+    re.IGNORECASE | re.DOTALL,
+)
+RE_ARTICLE_SRC_REF_AR = re.compile(
+    r"(?:الفصل|فصل)\s+(\d+)\s*(?:مكرر|مكرّر|\(جديد\)|\(مكرر\))?\s*"
+    r"(?:من|بالفصل)\s+"
+    r"(القانون|المرسوم|الأمر)\s+عدد\s+(\d+)\s+لسنة\s+(\d{4})",
+    re.DOTALL,
+)
+RE_ARTICLE_SRC_REF_FR = re.compile(
+    r"(?:article|art\.?)\s*(\d+|1er|premi(?:er|ere))\s*"
+    r"(?:du|de la|de l['’])\s*"
+    r"(loi|decret|décret)\s+n?[°oº]?\s*([\d\-]+)\s*(?:de|/)\s*(\d{4})",
+    re.IGNORECASE | re.DOTALL,
+)
+RE_ARTICLE_SRC_REF_FR_ALT = re.compile(
+    r"(?:article|art\.?)\s*(\d+|1er|premi(?:er|ere)).{0,60}?"
+    r"(loi|decret|décret)\s+n?[°oº]?\s*([\d]+(?:[-–—]\d+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Year detection from title:  مذكرة عامة عدد 02 لسنة 2026
 RE_NOTE_YEAR = re.compile(r"لسنة\s+(\d{4})")
+RE_NOTE_YEAR_FR = re.compile(
+    r"(?:l['’]ann[eé]e\s+|n[°oº]\s*\d+\s*[/\-]\s*|/)\s*(19\d{2}|20\d{2})",
+    re.IGNORECASE,
+)
+
+RE_DATE_STAMP_FR = re.compile(
+    r"^\d{1,2}\s*(?:JAN|F[ÉE]V|MAR|AVR|MAI|JUIN|JUIL|AOU|AO[ÛU]|SEP|OCT|NOV|D[ÉE]C)\s*\d{4}$",
+    re.IGNORECASE,
+)
+RE_DATE_STAMP_FR_ALT = re.compile(
+    r"^\d{1,2}\s+\d{1,2}\s+(?:JAN|F[ÉE]V|MAR|AVR|MAI|JUIN|JUIL|AOU|AO[ÛU]|SEP|OCT|NOV|D[ÉE]C)\s+\d{4}$",
+    re.IGNORECASE,
+)
 
 
 # ─── Data ─────────────────────────────────────────────────────────────────────
@@ -72,7 +115,25 @@ def est_tokens(text: str) -> int:
 
 
 def extract_refs(text: str) -> list[str]:
-    return sorted(set(re.sub(r"\s+", " ", r).strip() for r in RE_LAW_REF.findall(text)))
+    refs: list[str] = []
+    for m in RE_ARTICLE_SRC_REF_AR.finditer(text):
+        refs.append(f"الفصل {m.group(1)} من {m.group(2)} عدد {m.group(3)} لسنة {m.group(4)}")
+    for m in RE_ARTICLE_SRC_REF_FR.finditer(text):
+        refs.append(
+            f"article {m.group(1)} de {m.group(2)} n {m.group(3)} de {m.group(4)}"
+        )
+    for m in RE_ARTICLE_SRC_REF_FR_ALT.finditer(text):
+        src_num = re.sub(r"[–—]", "-", m.group(3))
+        src_year = ""
+        year_in_num = re.match(r"^(19\d{2}|20\d{2})-", src_num)
+        if year_in_num:
+            src_year = year_in_num.group(1)
+        if src_year:
+            refs.append(f"article {m.group(1)} de {m.group(2)} n {src_num} de {src_year}")
+
+    refs.extend(RE_LAW_REF.findall(text))
+    refs.extend(RE_LAW_REF_FR.findall(text))
+    return sorted(set(re.sub(r"\s+", " ", r).strip() for r in refs if str(r).strip()))
 
 
 def clean_text(text: str) -> str:
@@ -114,7 +175,15 @@ class ParsedLine:
 def detect_year(text: str) -> Optional[str]:
     """Extract the year from a note title like  مذكرة عامة عدد 02 لسنة 2026."""
     m = RE_NOTE_YEAR.search(text)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    mf = RE_NOTE_YEAR_FR.search(text)
+    return mf.group(1) if mf else None
+
+
+def _looks_like_date_stamp(text: str) -> bool:
+    s = (text or "").strip()
+    return bool(RE_DATE_STAMP_FR.match(s) or RE_DATE_STAMP_FR_ALT.match(s))
 
 
 def load_and_parse(path: str) -> tuple[list[ParsedLine], str, Optional[str]]:
@@ -149,12 +218,21 @@ def load_and_parse(path: str) -> tuple[list[ParsedLine], str, Optional[str]]:
         elif RE_FOOTER.match(stripped):
             is_noise = True
 
-        # Capture document title from first h1 or first line containing مذكرة
+        # Capture document title from first h1 / Arabic note line / French note line.
         if not doc_title:
             if md_level == 1:
                 doc_title = stripped
             elif "مذكرة" in stripped and "عامة" in stripped:
                 doc_title = stripped
+            elif re.search(r"note\s+(commune|generale|g[eé]n[eé]rale)", stripped, re.IGNORECASE):
+                doc_title = stripped
+        else:
+            # Prefer a semantic note title over an OCR date stamp.
+            if _looks_like_date_stamp(doc_title):
+                if ("مذكرة" in stripped and "عامة" in stripped) or re.search(
+                    r"note\s+(commune|generale|g[eé]n[eé]rale)", stripped, re.IGNORECASE
+                ):
+                    doc_title = stripped
 
         # Detect year from title or early lines (first 20 lines)
         if doc_year is None and i < 20:
@@ -194,22 +272,52 @@ def detect_sections(parsed: list[ParsedLine]) -> list[Section]:
     """
     sections = []
 
-    for pl in parsed:
-        if pl.md_level == 0 or pl.is_noise:
+    for idx, pl in enumerate(parsed):
+        if pl.is_noise:
             continue
 
         heading_text = pl.text.strip().rstrip(".-–: ")
         if not heading_text or len(heading_text) < 3:
             continue
+        if RE_DATE_STAMP_FR.match(heading_text) or RE_DATE_STAMP_FR_ALT.match(heading_text):
+            continue
 
-        # Extract section number if present
+        # Primary signal: markdown headings.
+        if pl.md_level > 0:
+            level = pl.md_level
+        else:
+            # Fallback for OCR without markdown heading markers.
+            # Detect structured headings: I., II., 1-, A., أ- ...
+            m_pref = re.match(r"^(?:[IVXLC]{1,8}[\.\-]|[0-9]{1,3}[\.\-\)]|[A-Z][\.\-]|[أ-ي][\.\-])\s+", heading_text)
+            m_obj = re.match(r"^(?:objet|resume|résumé|الموضوع)\s*[:\-]", heading_text, re.IGNORECASE)
+            if not (m_pref or m_obj):
+                continue
+
+            # Avoid false positives on long prose lines.
+            if len(heading_text) > 180:
+                continue
+            # Heuristic depth.
+            if m_obj:
+                level = 1
+            elif re.match(r"^[IVXLC]{1,8}[\.\-]\s+", heading_text):
+                level = 2
+            elif re.match(r"^[0-9]{1,3}[\.\-\)]\s+", heading_text):
+                level = 3
+            else:
+                level = 4
+
+            # If previous line is also a heading marker, keep only one boundary.
+            if idx > 0 and not parsed[idx - 1].is_noise and parsed[idx - 1].md_level == 0:
+                prev = parsed[idx - 1].text.strip()
+                if re.match(r"^(?:[IVXLC]{1,8}|[0-9]{1,3}|[A-Z]|[أ-ي])[\.\-\)]?$", prev):
+                    continue
+
+        # Extract section number if present.
         sec_num = ""
         # Patterns: "1.", "1-", "II.", "III.", "أ-", "ب-"
-        m = re.match(r"^(\d+[\.\-\)]?|[IVX]+[\.\-]?|[أ-ي][\.\-])\s*", heading_text)
+        m = re.match(r"^(\d+[\.\-\)]?|[IVXLC]+[\.\-]?|[A-Z][\.\-]?|[أ-ي][\.\-])\s*", heading_text, re.IGNORECASE)
         if m:
             sec_num = m.group(1).rstrip(".-) ")
-
-        level = pl.md_level  # use markdown level directly
 
         sections.append(Section(
             start_idx=pl.idx,
@@ -308,11 +416,17 @@ def build_chunks(
 
         refs = extract_refs(text)
         tok = est_tokens(text)
+        if _is_low_value_heading_chunk(text, tok, refs):
+            continue
 
         # Split if oversized
         if tok > max_tokens:
             parts = _split_section(text, max_tokens)
             for pi, part in enumerate(parts, 1):
+                part_refs = extract_refs(part)
+                part_tok = est_tokens(part)
+                if _is_low_value_heading_chunk(part, part_tok, part_refs):
+                    continue
                 chunks.append(Chunk(
                     chunk_id=str(uuid.uuid4()),
                     chunk_type=chunk_type,
@@ -322,10 +436,10 @@ def build_chunks(
                     section_path=section_path,
                     section_number=f"{sec.number}_part{pi}" if sec.number else f"part{pi}",
                     text=part,
-                    cross_references=extract_refs(part),
+                    cross_references=part_refs,
                     page_start=pg_start or 1,
                     page_end=pg_end or 1,
-                    token_count=est_tokens(part),
+                    token_count=part_tok,
                 ))
         else:
             chunks.append(Chunk(
@@ -350,7 +464,7 @@ def _split_section(text: str, max_tokens: int) -> list[str]:
     """Split oversized section at paragraph boundaries."""
     paragraphs = re.split(r"\n\n+", text)
     if len(paragraphs) <= 1:
-        return [text]
+        return _hard_split_words(text, max_tokens)
 
     result = []
     current = ""
@@ -363,7 +477,68 @@ def _split_section(text: str, max_tokens: int) -> list[str]:
             current = candidate
     if current.strip():
         result.append(current.strip())
-    return result if result else [text]
+    safe: list[str] = []
+    for part in (result if result else [text]):
+        if est_tokens(part) <= max_tokens:
+            safe.append(part)
+            continue
+        for p in _hard_split_by_lines(part.split("\n"), max_tokens):
+            if est_tokens(p) <= max_tokens:
+                safe.append(p)
+            else:
+                safe.extend(_hard_split_words(p, max_tokens))
+    return [p for p in safe if p.strip()]
+
+
+def _is_low_value_heading_chunk(text: str, tok: int, refs: list[str]) -> bool:
+    """Drop heading-only micro chunks (e.g., isolated 'RESUME')."""
+    if tok > 5 or refs:
+        return False
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if len(lines) != 1:
+        return False
+    line = lines[0]
+    # One short heading line without body is low-value for retrieval.
+    if len(line) > 48:
+        return False
+    if re.match(r"^(?:resume|résumé|ملخص)$", line, re.IGNORECASE):
+        return True
+    if re.match(r"^(?:[A-Z]|[أ-ي]|[IVXLC]+)[\.\-\)]\s+.+$", line):
+        return True
+    return True
+
+
+def _hard_split_by_lines(lines_list: list[str], max_tokens: int) -> list[str]:
+    out: list[str] = []
+    cur: list[str] = []
+    for line in lines_list:
+        candidate = "\n".join(cur + [line])
+        if cur and est_tokens(candidate) > max_tokens:
+            out.append("\n".join(cur))
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        out.append("\n".join(cur))
+    return [p for p in out if p.strip()]
+
+
+def _hard_split_words(text: str, max_tokens: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    out: list[str] = []
+    cur: list[str] = []
+    for w in words:
+        candidate = " ".join(cur + [w])
+        if cur and est_tokens(candidate) > max_tokens:
+            out.append(" ".join(cur))
+            cur = [w]
+        else:
+            cur.append(w)
+    if cur:
+        out.append(" ".join(cur))
+    return [p for p in out if p.strip()]
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -372,12 +547,12 @@ def _collect_input_files(input_path: str, input_dir: str | None) -> list[str]:
     """Resolve input HTML files from --input or --input-dir."""
     files: list[str] = []
     if input_dir:
-        pattern = str(Path(input_dir) / "*.html")
-        files = sorted(glob.glob(pattern))
+        pattern = str(Path(input_dir) / "**" / "*.html")
+        files = sorted(glob.glob(pattern, recursive=True))
     elif input_path:
         # Single file or glob pattern
         if "*" in input_path:
-            files = sorted(glob.glob(input_path))
+            files = sorted(glob.glob(input_path, recursive=True))
         else:
             files = [input_path]
     return [f for f in files if Path(f).is_file()]
@@ -385,12 +560,16 @@ def _collect_input_files(input_path: str, input_dir: str | None) -> list[str]:
 
 def process_single_file(input_path: str, max_tokens: int) -> list[Chunk]:
     """Process one OCR HTML file and return its chunks."""
-    source_file = Path(input_path).name
+    source_file = Path(input_path).as_posix()
     print(f"\n{'='*60}")
     print(f"Processing: {source_file}")
     print(f"{'='*60}")
 
     parsed, doc_title, doc_year = load_and_parse(input_path)
+    if not doc_year:
+        path_years = re.findall(r"(19\d{2}|20\d{2})", source_file)
+        if path_years:
+            doc_year = path_years[-1]
     print(f"  {len(parsed)} lines, title: {doc_title[:80]}")
     print(f"  Detected year: {doc_year or '(not found)'}")
 
@@ -426,7 +605,7 @@ def process_single_file(input_path: str, max_tokens: int) -> list[Chunk]:
 
 
 def run(input_path="ocr_output_notes.html", output_path="chunks_notes.json",
-        max_tokens=1500, input_dir=None):
+        max_tokens=900, input_dir=None):
     files = _collect_input_files(input_path, input_dir)
     if not files:
         print(f"ERROR: No HTML files found (input={input_path}, input_dir={input_dir})")
@@ -460,7 +639,7 @@ def main():
     p.add_argument("--input-dir", default=None,
                    help="Directory containing OCR HTML files (e.g. 'OCR_Notes')")
     p.add_argument("--output", default="chunks_notes.json")
-    p.add_argument("--max-tokens", type=int, default=1500)
+    p.add_argument("--max-tokens", type=int, default=900)
     args = p.parse_args()
 
     # Default: look for OCR_Notes directory, fall back to single file

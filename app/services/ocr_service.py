@@ -1,10 +1,5 @@
 """
 PaddleOCR-VL document OCR service.
-
-This service converts PDF pages to images, runs PaddleOCR-VL, and produces:
-  - page-level OCR metadata
-  - combined text
-  - optional HTML output suitable for chunking pipelines
 """
 
 from __future__ import annotations

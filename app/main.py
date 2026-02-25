@@ -1,10 +1,4 @@
-"""
-Graph RAG — FastAPI application factory.
-
-This module creates and configures the FastAPI app. It can be used both:
-  • On Modal (via modal_app.py — GPU A100, models loaded in container)
-  • Locally  (uvicorn app.main:create_app --factory --reload)
-"""
+"""FastAPI application factory."""
 
 from __future__ import annotations
 import logging
@@ -25,7 +19,7 @@ log = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     """Build and return the FastAPI application (no model loading here)."""
-    from app.routers import query, documents, graph, ocr
+    from app.routers import query, documents, graph, ocr, ui
 
     application = FastAPI(
         title="Graph RAG API",
@@ -39,7 +33,7 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
-    # CORS — allow all origins (tighten in production)
+    # Keep CORS open for development and UI integration.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -48,17 +42,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Routers
     application.include_router(query.router)
     application.include_router(documents.router)
     application.include_router(ocr.router)
     application.include_router(graph.router)
+    application.include_router(ui.router)
 
     @application.get("/")
     async def root():
         return {
             "app": "Graph RAG API",
             "docs": "/docs",
+            "ui": "/ui",
             "ocr": "/api/ocr/process",
             "health": "/api/health",
         }

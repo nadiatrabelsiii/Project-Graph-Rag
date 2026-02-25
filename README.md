@@ -119,6 +119,7 @@ Set at least:
 - `NEO4J_URI`
 - `NEO4J_USER`
 - `NEO4J_PASSWORD`
+- `NEO4J_DATABASE` (Aura: usually your instance DB name)
 
 Optional model/config variables are documented in `.env.example`.
 

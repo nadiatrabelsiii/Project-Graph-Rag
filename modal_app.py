@@ -1,21 +1,4 @@
-"""
-modal_app.py — Deploy the Graph RAG FastAPI backend on Modal (GPU A100).
-
-This serves the full FastAPI application on a Modal container with:
-  • Qwen 7B LLM (float16) on A100 GPU
-  • multilingual-e5-base embedding model
-  • Neo4j connection (credentials via Modal secrets)
-  • All /api/* endpoints (query, chunking, graph build, health)
-
-Deploy:
-    modal deploy modal_app.py
-
-Dev (hot-reload):
-    modal serve modal_app.py
-
-Test locally:
-    curl https://<your-modal-app>.modal.run/docs
-"""
+"""Modal deployment entrypoint for the Graph RAG FastAPI backend."""
 
 from __future__ import annotations
 import modal
@@ -23,10 +6,6 @@ import modal
 from app.config import load_environment
 
 load_environment()
-
-# ═══════════════════════════════════════════════════════════════════════
-# Modal configuration
-# ═══════════════════════════════════════════════════════════════════════
 
 app = modal.App("graph-rag-api")
 
@@ -42,38 +21,29 @@ image = (
         "libxrender1",
     )
     .pip_install(
-        # FastAPI
         "fastapi>=0.115.0",
         "pydantic>=2.0",
         "python-dotenv>=1.0.1",
-        # ML / LLM
         "torch>=2.4.0",
         "transformers>=4.46.0",
         "accelerate>=0.34.0",
         "sentencepiece",
         "sentence-transformers>=3.0.0",
-        # OCR
         "pdf2image>=1.17.0",
         "Pillow>=10.0.0",
         "paddlepaddle>=3.0.0",
         "paddleocr>=3.0.0",
-        # Agent
         "langgraph>=0.2.53",
         "langchain-core>=0.3.0",
-        # Neo4j
         "neo4j>=5.0.0",
     )
-    # Copy the entire app package into the container
     .add_local_dir("app", remote_path="/root/app")
+    # Make chunk files available for /api/graph/build in production.
+    .add_local_file("chunks_graphrag.json", remote_path="/root/chunks_graphrag.json")
+    .add_local_file("chunks_notes.json", remote_path="/root/chunks_notes.json")
 )
 
-# Persistent volume for model weights (survives between deploys)
 models_vol = modal.Volume.from_name("graph-rag-models", create_if_missing=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# GPU-backed FastAPI server
-# ═══════════════════════════════════════════════════════════════════════
 
 @app.cls(
     image=image,
@@ -85,11 +55,11 @@ models_vol = modal.Volume.from_name("graph-rag-models", create_if_missing=True)
 )
 @modal.concurrent(max_inputs=4)
 class GraphRAGServer:
-    """Modal class that loads models on startup and serves FastAPI."""
+    """ASGI server with model startup hooks."""
 
     @modal.enter()
     def startup(self):
-        """Load LLM + embedding model once when the container starts."""
+        """Load models once per container."""
         import sys
         sys.path.insert(0, "/root")
 
@@ -101,28 +71,34 @@ class GraphRAGServer:
 
     @modal.asgi_app()
     def serve(self):
-        """Return the FastAPI ASGI app (Modal serves it automatically)."""
+        """Return the FastAPI ASGI app."""
         import sys
         sys.path.insert(0, "/root")
 
         from app.main import create_app
         return create_app()
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# CLI entrypoint  (modal run modal_app.py --query "...")
-# ═══════════════════════════════════════════════════════════════════════
-
 @app.local_entrypoint()
 def main(
     query: str = "ما هو النظام الجبائي للشركات الأهلية في مادة الأداء على القيمة المضافة؟",
+    endpoint: str = "",
 ):
-    """Quick test: run a single query against the deployed agent."""
+    """Run one query against the deployed API endpoint."""
     import urllib.request
     import json
 
-    # When running locally, hit the deployed endpoint
-    url = GraphRAGServer.serve.web_url + "/api/query"
+    if endpoint:
+        base_url = endpoint.rstrip("/")
+    else:
+        serve_fn = modal.Function.from_name("graph-rag-api", "GraphRAGServer.serve")
+        base_url = (serve_fn.web_url or "").rstrip("/")
+        if not base_url:
+            raise RuntimeError(
+                "Unable to resolve deployed web URL. "
+                "Provide one explicitly with --endpoint."
+            )
+
+    url = base_url + "/api/query"
     data = json.dumps({"query": query}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
 

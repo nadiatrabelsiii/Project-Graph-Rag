@@ -21,17 +21,17 @@ async def query(req: QueryRequest):
     1. Analyze intent & extract entities
     2. Retrieve from Neo4j (keyword, vector, graph traversal)
     3. Evaluate relevance via LLM
-    4. Generate a grounded Arabic legal answer
+    4. Generate a grounded French legal answer
     """
     agent = get_agent()
     if not agent.is_ready:
-        raise HTTPException(503, "Models are still loading. Try again shortly.")
+        raise HTTPException(503, "Les modeles sont en cours de chargement. Veuillez reessayer dans un instant.")
 
     try:
         result = agent.query(req.query)
     except Exception as exc:
         log.exception("query failed")
-        raise HTTPException(500, f"Query processing error: {exc}")
+        raise HTTPException(500, f"Erreur lors du traitement de la requete: {exc}")
 
     return QueryResponse(
         query=result.get("query", req.query),

@@ -30,9 +30,9 @@ from typing import Optional
 
 # ─── Regex ────────────────────────────────────────────────────────────────────
 
-# Article declaration:  الفصل N .  |  الفصل الأوّل -
+# Article declaration (Arabic):  الفصل N .  |  الفصل الأوّل -
 # The key is the separator (. - – —) AFTER the number, which distinguishes
-# a real article start from an inline reference like "الفصل 63 من القانون"
+# a real article start from an inline reference like "الفصل 63 من القانون".
 RE_ARTICLE_DECL = re.compile(
     r"^(الفصل\s+"
     r"(?:الأوّل|الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر"
@@ -40,9 +40,22 @@ RE_ARTICLE_DECL = re.compile(
     r")\s*([\.\-–—])"   # MUST have a separator
 )
 
+# Article declaration (French): "Article 1 -", "Art. 2 :", "Article premier -"
+RE_ARTICLE_DECL_FR = re.compile(
+    r"^(?:article|art\.?)\s*"
+    r"(premi(?:er|ere)|1er|\d+)(?:\s*\([^)]*\))?\s*[:\-–—]",
+    re.IGNORECASE,
+)
+
 # Article at end of a heading line (OCR merged): "...معاليم التسجيل الفصل 30 ."
 RE_ARTICLE_TAIL = re.compile(
     r"(الفصل\s+\d+)\s*[\.\-–—]\s*$"
+)
+
+# French tail form: "... / TVA Art. 30 -"
+RE_ARTICLE_TAIL_FR = re.compile(
+    r"((?:article|art\.?)\s*(?:premi(?:er|ere)|1er|\d+)(?:\s*\([^)]*\))?)\s*[:\-–—]\s*$",
+    re.IGNORECASE,
 )
 
 # "الفصل N ." on its own short line (≤80 chars, not a cross-reference)
@@ -50,7 +63,16 @@ RE_ARTICLE_STANDALONE = re.compile(
     r"^(الفصل\s+\d+)\s*[\.\-–—]\s*$"
 )
 
+RE_ARTICLE_STANDALONE_FR = re.compile(
+    r"^(?:article|art\.?)\s*(?:premi(?:er|ere)|1er|\d+)(?:\s*\([^)]*\))?\s*[:\-–—]\s*$",
+    re.IGNORECASE,
+)
+
 RE_ARTICLE_NUM = re.compile(r"الفصل\s+(\S+)")
+RE_ARTICLE_NUM_FR = re.compile(
+    r"^(?:article|art\.?)\s*(premi(?:er|ere)|1er|\d+)",
+    re.IGNORECASE,
+)
 
 ORDINAL_MAP = {
     "الأوّل": "1", "الأول": "1", "الثاني": "2", "الثالث": "3",
@@ -61,19 +83,56 @@ ORDINAL_MAP = {
 RE_MIHWAR = re.compile(
     r"المحور\s+(?:الأوّل|الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر)"
 )
+RE_SECTION_FR = re.compile(
+    r"^(?:titre|chapitre|partie|dispositions|annexe)\b",
+    re.IGNORECASE,
+)
 
 RE_PAGEBREAK = re.compile(r"<!--\s*PageBreak\s*\[(\d+)\]\s*-->")
 
 RE_SCHEDULE = re.compile(r'الجدول\s*[\-"\s«»]*([أ-ي])[\-"\s«»]*')
+RE_SCHEDULE_FR = re.compile(
+    r"^(?:annexe|tableau)\s*(?:n[°oº]?\s*)?([A-Za-z0-9\-]+)?",
+    re.IGNORECASE,
+)
 
 RE_LAW_REF = re.compile(
     r"(?:القانون|المرسوم|الأمر)\s+عدد\s+\d+\s+لسنة\s+\d{4}", re.DOTALL
+)
+RE_LAW_REF_FR = re.compile(
+    r"(?:loi|decret|décret|décret-loi)\s+n[°oº]?\s*[\d\-–—]+\s+(?:du|de)\s+[^,\n]*?(?:19\d{2}|20\d{2})",
+    re.IGNORECASE | re.DOTALL,
+)
+RE_ARTICLE_SRC_REF_AR = re.compile(
+    r"(?:الفصل|فصل)\s+(\d+)\s*(?:مكرر|مكرّر|\(جديد\)|\(مكرر\))?\s*"
+    r"(?:من|بالفصل)\s+"
+    r"(القانون|المرسوم|الأمر)\s+عدد\s+(\d+)\s+لسنة\s+(\d{4})",
+    re.DOTALL,
+)
+RE_ARTICLE_SRC_REF_FR = re.compile(
+    r"(?:article|art\.?)\s*(\d+|1er|premi(?:er|ere))\s*"
+    r"(?:du|de la|de l['’])\s*"
+    r"(loi|decret|décret)\s+n?[°oº]?\s*([\d\-]+)\s*(?:de|/)\s*(\d{4})",
+    re.IGNORECASE | re.DOTALL,
+)
+RE_ARTICLE_SRC_REF_FR_ALT = re.compile(
+    r"(?:article|art\.?)\s*(\d+|1er|premi(?:er|ere)).{0,60}?"
+    r"(loi|decret|décret)\s+n?[°oº]?\s*([\d]+(?:[-–—]\d+)?)",
+    re.IGNORECASE | re.DOTALL,
 )
 
 RE_TABLE_CLOSE = re.compile(r"</table>", re.IGNORECASE)
 
 RE_FOOTER = re.compile(
-    r"^(?:صفحة\s+\d+|عدد\s+\d+|الرائد الرسمي للجمهورية التونسية\s*[-–]\s*\d+.*)$"
+    r"^(?:"
+    r"صفحة\s+\d+|"
+    r"عدد\s+\d+|"
+    r"الرائد الرسمي للجمهورية التونسية\s*[-–]\s*\d+.*|"
+    r"page\s+\d+|"
+    r"journal officiel de la republique tunisienne.*|"
+    r"n[°oº]\s*\d+"
+    r")$",
+    re.IGNORECASE,
 )
 
 RE_MD_PREFIX = re.compile(r"^#{1,6}\s*")
@@ -81,9 +140,15 @@ RE_MD_PREFIX = re.compile(r"^#{1,6}\s*")
 # Year detection:  قانون المالية لسنة 2026   or   لسنة 2025
 RE_LAW_YEAR_FINANCE = re.compile(r"قانون\s+المالية\s+لسنة\s+(\d{4})")
 RE_LAW_YEAR_GENERIC = re.compile(r"لسنة\s+(\d{4})")
+RE_LAW_YEAR_FINANCE_FR = re.compile(r"loi\s+de\s+finances\s+pour\s+l['’]ann[eé]e\s+(\d{4})", re.IGNORECASE)
+RE_LAW_YEAR_GENERIC_FR = re.compile(r"(?:19\d{2}|20\d{2})")
 
 # Document title:  قانون عدد ... لسنة ... يتعلق ...
 RE_LAW_TITLE = re.compile(r"(قانون\s+عدد\s+\d+\s+لسنة\s+\d{4}[^\n]*)")
+RE_LAW_TITLE_FR = re.compile(
+    r"(loi\s+n[°oº]?\s*[\d\-]+\s+du\s+[^,\n]+,\s*portant\s+loi\s+de\s+finances\s+pour\s+l['’]ann[eé]e\s+\d{4}[^\n]*)",
+    re.IGNORECASE,
+)
 
 
 # ─── Data ─────────────────────────────────────────────────────────────────────
@@ -112,7 +177,25 @@ def est_tokens(text: str) -> int:
     return max(1, int(len(text.split()) * 1.5))
 
 def extract_refs(text: str) -> list[str]:
-    return sorted(set(re.sub(r"\s+", " ", r).strip() for r in RE_LAW_REF.findall(text)))
+    refs: list[str] = []
+    for m in RE_ARTICLE_SRC_REF_AR.finditer(text):
+        refs.append(f"الفصل {m.group(1)} من {m.group(2)} عدد {m.group(3)} لسنة {m.group(4)}")
+    for m in RE_ARTICLE_SRC_REF_FR.finditer(text):
+        refs.append(
+            f"article {m.group(1)} de {m.group(2)} n {m.group(3)} de {m.group(4)}"
+        )
+    for m in RE_ARTICLE_SRC_REF_FR_ALT.finditer(text):
+        src_num = re.sub(r"[–—]", "-", m.group(3))
+        src_year = ""
+        year_in_num = re.match(r"^(19\d{2}|20\d{2})-", src_num)
+        if year_in_num:
+            src_year = year_in_num.group(1)
+        if src_year:
+            refs.append(f"article {m.group(1)} de {m.group(2)} n {src_num} de {src_year}")
+
+    refs.extend(RE_LAW_REF.findall(text))
+    refs.extend(RE_LAW_REF_FR.findall(text))
+    return sorted(set(re.sub(r"\s+", " ", r).strip() for r in refs if str(r).strip()))
 
 def clean_text(text: str) -> str:
     out = []
@@ -123,11 +206,48 @@ def clean_text(text: str) -> str:
         out.append(line)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out).strip())
 
-def get_art_num(text: str) -> Optional[str]:
-    m = RE_ARTICLE_NUM.search(text)
-    if not m:
+
+def _normalize_article_number(raw_num: str) -> Optional[str]:
+    token = (raw_num or "").strip().lower()
+    token = re.sub(r"[^\w\u0600-\u06FF]+", "", token)
+    if not token:
         return None
-    return ORDINAL_MAP.get(m.group(1), m.group(1))
+
+    if token in ORDINAL_MAP:
+        return ORDINAL_MAP[token]
+
+    if token in {"premier", "premiere", "1er"}:
+        return "1"
+
+    m = re.search(r"\d+", token)
+    if m:
+        return m.group(0)
+    return None
+
+
+def detect_article_start(stripped: str) -> tuple[bool, Optional[str]]:
+    m_ar = RE_ARTICLE_DECL.match(stripped)
+    if m_ar:
+        return True, _normalize_article_number(m_ar.group(1).replace("الفصل", "").strip())
+
+    m_fr = RE_ARTICLE_DECL_FR.match(stripped)
+    if m_fr:
+        return True, _normalize_article_number(m_fr.group(1))
+
+    return False, None
+
+def get_art_num(text: str) -> Optional[str]:
+    t = (text or "").strip()
+
+    m_ar = RE_ARTICLE_NUM.search(t)
+    if m_ar:
+        return _normalize_article_number(m_ar.group(1))
+
+    m_fr = RE_ARTICLE_NUM_FR.search(t)
+    if m_fr:
+        return _normalize_article_number(m_fr.group(1))
+
+    return None
 
 def page_at(idx: int, pmap: list[tuple[int, int]]) -> int:
     page = 1
@@ -156,13 +276,23 @@ def detect_law_title_and_year(lines: list[str], limit: int = 30) -> tuple[str, O
     tm = RE_LAW_TITLE.search(text_block)
     if tm:
         doc_title = re.sub(r"\s+", " ", tm.group(1)).strip().rstrip(".()١")
+    else:
+        tf = RE_LAW_TITLE_FR.search(text_block)
+        if tf:
+            doc_title = re.sub(r"\s+", " ", tf.group(1)).strip().rstrip(".()")
 
     # Year: prefer "قانون المالية لسنة YYYY" (fiscal year), else last لسنة YYYY
     fm = RE_LAW_YEAR_FINANCE.search(text_block)
     if fm:
         doc_year = fm.group(1)
     else:
+        ff = RE_LAW_YEAR_FINANCE_FR.search(text_block)
+        if ff:
+            doc_year = ff.group(1)
+
+    if doc_year is None:
         all_years = RE_LAW_YEAR_GENERIC.findall(text_block)
+        all_years += RE_LAW_YEAR_GENERIC_FR.findall(text_block)
         if all_years:
             doc_year = all_years[-1]  # last year found is typically the target
 
@@ -191,12 +321,23 @@ def load(path: str) -> tuple[list[str], list[tuple[int, int]], set[int], str, Op
         if pm:
             page_map.append((len(lines), int(pm.group(1))))
 
-        # Rejoin OCR split: line ending with "الفصل" + next line "63 من..."
+        # Rejoin OCR split: Arabic "الفصل" + next line.
         stripped = line.strip()
         if stripped.endswith("الفصل") or stripped == "الفصل":
             if i + 1 < len(raw):
                 next_stripped = RE_MD_PREFIX.sub("", raw[i + 1]).strip()
                 if re.match(r"^\d+\s+(?:من|و|ل|ال)", next_stripped):
+                    joined = line.rstrip() + " " + RE_MD_PREFIX.sub("", raw[i + 1]).lstrip()
+                    lines.append(joined)
+                    i += 2
+                    continue
+
+        # Rejoin OCR split: French "Article" / "Art." + next line starts with number.
+        low = stripped.lower()
+        if low in {"article", "art.", "art"}:
+            if i + 1 < len(raw):
+                next_stripped = RE_MD_PREFIX.sub("", raw[i + 1]).strip()
+                if re.match(r"^(?:premi(?:er|ere)|1er|\d+)\b", next_stripped, re.IGNORECASE):
                     joined = line.rstrip() + " " + RE_MD_PREFIX.sub("", raw[i + 1]).lstrip()
                     lines.append(joined)
                     i += 2
@@ -216,21 +357,27 @@ def load(path: str) -> tuple[list[str], list[tuple[int, int]], set[int], str, Op
 # ─── Zone boundary ───────────────────────────────────────────────────────────
 
 def find_zone_boundary(lines: list[str]) -> int:
-    """Line where budget schedule tables begin (after all law articles)."""
-    # Find last article
-    last_art = 0
+    """Line where annex/budget tables begin (ideally after last article)."""
+    article_lines: list[int] = []
     for i, line in enumerate(lines):
-        if RE_ARTICLE_DECL.match(line.strip()):
-            last_art = i
+        is_art, _ = detect_article_start(line.strip())
+        if is_art:
+            article_lines.append(i)
 
-    # Find first schedule header AFTER last article
-    for i in range(last_art, len(lines)):
+    last_art = article_lines[-1] if article_lines else 0
+
+    # Prefer first table block after the last detected article.
+    for i in range(last_art + 1, len(lines)):
         s = lines[i].strip()
-        if RE_SCHEDULE.search(s) and "المدرج بهذا القانون" not in s:
-            ahead = "\n".join(lines[i:i+80])
-            if "<table" in ahead.lower():
+        if "<table" in s.lower():
+            return i
+        if RE_SCHEDULE.search(s) or RE_SCHEDULE_FR.search(s):
+            ahead = "\n".join(lines[i:i+80]).lower()
+            if "<table" in ahead:
                 return i
-    return int(len(lines) * 0.8)
+
+    # If no annex zone found, keep all lines as law-text zone.
+    return len(lines)
 
 
 # ─── Classify each line ──────────────────────────────────────────────────────
@@ -275,32 +422,38 @@ def classify_lines(lines: list[str], zone_end: int) -> list[dict]:
             info["type"] = TABLE_LINE
 
         # --- المحور ---
-        elif RE_MIHWAR.search(stripped):
+        elif RE_MIHWAR.search(stripped) or RE_SECTION_FR.match(stripped):
             info["type"] = MIHWAR
 
-        # --- Article at start of line ---
-        elif RE_ARTICLE_DECL.match(stripped):
-            num = get_art_num(stripped)
-            if num and "(جديد)" not in stripped:
+        # --- Article at start of line (Arabic/French) ---
+        else:
+            is_art, num = detect_article_start(stripped)
+            if is_art and num and "(جديد)" not in stripped:
                 info["type"] = ARTICLE_START
                 info["art_num"] = num
+            else:
+                # --- Article at end of heading line (OCR merged) ---
+                if RE_ARTICLE_TAIL.search(stripped):
+                    m = RE_ARTICLE_TAIL.search(stripped)
+                    num = get_art_num(m.group(1))
+                    if num:
+                        info["type"] = ARTICLE_START
+                        info["art_num"] = num
 
-        # --- Article at end of heading line (OCR merged) ---
-        elif RE_ARTICLE_TAIL.search(stripped):
-            # Line like: "إعفاء عقود القروض... الفصل 30 ."
-            # Treat the whole line as article start (heading + article on same line)
-            m = RE_ARTICLE_TAIL.search(stripped)
-            num = get_art_num(m.group(1))
-            if num:
-                info["type"] = ARTICLE_START
-                info["art_num"] = num
+                # --- French tail ---
+                elif RE_ARTICLE_TAIL_FR.search(stripped):
+                    m = RE_ARTICLE_TAIL_FR.search(stripped)
+                    num = get_art_num(m.group(1))
+                    if num:
+                        info["type"] = ARTICLE_START
+                        info["art_num"] = num
 
-        # --- Article on standalone short line (e.g. "الفصل 20 .") ---
-        elif RE_ARTICLE_STANDALONE.match(stripped):
-            num = get_art_num(stripped)
-            if num:
-                info["type"] = ARTICLE_START
-                info["art_num"] = num
+                # --- Article on standalone short line ---
+                elif RE_ARTICLE_STANDALONE.match(stripped) or RE_ARTICLE_STANDALONE_FR.match(stripped):
+                    num = get_art_num(stripped)
+                    if num:
+                        info["type"] = ARTICLE_START
+                        info["art_num"] = num
 
         result.append(info)
 
@@ -424,22 +577,40 @@ def build_law_chunks(
         refs = extract_refs(text)
         tok = est_tokens(text)
 
-        # Always treat as one article chunk, no subchunking by numbers
-        chunks.append(Chunk(
-            chunk_id=str(uuid.uuid4()),
-            chunk_type="article",
-            document_title=doc_title,
-            document_year=doc_year,
-            source_file=source_file,
-            zone="law_text",
-            section_path=section_path,
-            article_number=art_num,
-            text=text,
-            cross_references=refs,
-            page_start=pg_start,
-            page_end=pg_end,
-            token_count=tok,
-        ))
+        if tok > max_art_tokens:
+            parts = _split_article(text, max_art_tokens)
+            for pi, part in enumerate(parts, 1):
+                chunks.append(Chunk(
+                    chunk_id=str(uuid.uuid4()),
+                    chunk_type="article_subchunk",
+                    document_title=doc_title,
+                    document_year=doc_year,
+                    source_file=source_file,
+                    zone="law_text",
+                    section_path=section_path,
+                    article_number=art_num,
+                    text=part,
+                    cross_references=extract_refs(part),
+                    page_start=pg_start,
+                    page_end=pg_end,
+                    token_count=est_tokens(part),
+                ))
+        else:
+            chunks.append(Chunk(
+                chunk_id=str(uuid.uuid4()),
+                chunk_type="article",
+                document_title=doc_title,
+                document_year=doc_year,
+                source_file=source_file,
+                zone="law_text",
+                section_path=section_path,
+                article_number=art_num,
+                text=text,
+                cross_references=refs,
+                page_start=pg_start,
+                page_end=pg_end,
+                token_count=tok,
+            ))
 
     # Propagate section_path: articles without a path inherit from previous
     prev_path = ""
@@ -467,11 +638,11 @@ def _ci_of(classified: list[dict], line_idx: int) -> int:
 
 def _split_article(text: str, max_tokens: int) -> list[str]:
     """Split article at numbered sub-paragraphs or blank lines."""
-    parts = re.split(r"(?=\n\d+[\\\)]\s)", text)
+    parts = re.split(r"(?=\n(?:\d+[\\\)\.\-]|[IVXLC]+\.)\s)", text, flags=re.IGNORECASE)
     if len(parts) <= 1:
         parts = re.split(r"\n\n+", text)
     if len(parts) <= 1:
-        return [text]
+        return _hard_split_words(text, max_tokens)
 
     result = []
     current = ""
@@ -484,7 +655,34 @@ def _split_article(text: str, max_tokens: int) -> list[str]:
             current = candidate
     if current.strip():
         result.append(current.strip())
-    return result if result else [text]
+
+    # Hard safety: ensure no oversized article chunk remains.
+    safe: list[str] = []
+    for part in (result if result else [text]):
+        if est_tokens(part) <= max_tokens:
+            safe.append(part)
+            continue
+        for p in _hard_split_by_tokens(part.split("\n"), max_tokens):
+            if est_tokens(p) <= max_tokens:
+                safe.append(p)
+            else:
+                safe.extend(_hard_split_words(p, max_tokens))
+    safe = [p for p in safe if p.strip()]
+
+    # Merge tiny heading-only fragments into the following part.
+    merged: list[str] = []
+    i = 0
+    while i < len(safe):
+        cur = safe[i].strip()
+        if i + 1 < len(safe) and _is_tiny_article_heading(cur):
+            nxt = safe[i + 1].strip()
+            merged.append((cur + "\n" + nxt).strip())
+            i += 2
+            continue
+        merged.append(cur)
+        i += 1
+
+    return [p for p in merged if p.strip()]
 
 
 # ─── Budget table chunking ───────────────────────────────────────────────────
@@ -499,26 +697,101 @@ def chunk_tables(
     source_file: str = "",
 ) -> list[Chunk]:
     chunks = []
+    if zone_start >= len(lines):
+        return chunks
     zone_lines = lines[zone_start:]
 
+    def _detect_schedule_label(line: str) -> Optional[str]:
+        s = (line or "").strip()
+        if not s:
+            return None
+        m_ar = RE_SCHEDULE.search(s)
+        if m_ar:
+            return f"الجدول {m_ar.group(1)}"
+        m_fr = RE_SCHEDULE_FR.search(s)
+        if m_fr:
+            tail = m_fr.group(1) or ""
+            base = "Annexe/Tableau"
+            return f"{base} {tail}".strip()
+        if "annexe" in s.lower() or "tableau" in s.lower():
+            return s[:120]
+        return None
+
+    # Extract explicit table blocks first.
+    blocks: list[tuple[int, int, str, str]] = []
+    current_label = "Annexe/Tableau"
+    i = 0
+    while i < len(zone_lines):
+        label = _detect_schedule_label(zone_lines[i])
+        if label:
+            current_label = label
+
+        if "<table" in zone_lines[i].lower():
+            start = i
+            end = i
+            while end < len(zone_lines) and "</table>" not in zone_lines[end].lower():
+                end += 1
+            end = min(end + 1, len(zone_lines))
+
+            # Keep a small textual context above each table (title/annexe line).
+            ctx_start = max(0, start - 6)
+            ctx = [ln for ln in zone_lines[ctx_start:start] if ln.strip()]
+            block_text = "\n".join(ctx + zone_lines[start:end]).strip()
+            blocks.append((start, end, current_label, block_text))
+            i = end
+            continue
+        i += 1
+
+    if blocks:
+        for s_start, s_end, s_name, raw_text in blocks:
+            parts = [raw_text]
+            if est_tokens(raw_text) > max_tokens:
+                parts = _split_subtotals(raw_text.split("\n"), max_tokens)
+            for part in parts:
+                if not part.strip():
+                    continue
+                tok = est_tokens(part)
+                if tok < 10:
+                    continue
+                chunks.append(Chunk(
+                    chunk_id=str(uuid.uuid4()),
+                    chunk_type="schedule_table",
+                    document_title=doc_title,
+                    document_year=doc_year,
+                    source_file=source_file,
+                    zone="budget_table",
+                    schedule_name=s_name,
+                    text=part.strip(),
+                    page_start=page_at(zone_start + s_start, page_map),
+                    page_end=page_at(zone_start + s_end, page_map),
+                    token_count=tok,
+                ))
+        return chunks
+
+    # Fallback: if OCR didn't preserve <table>, chunk text heuristically.
     schedules = []
     for i, line in enumerate(zone_lines):
-        m = RE_SCHEDULE.search(line.strip())
-        if m:
-            schedules.append((i, m.group(1)))
+        lab = _detect_schedule_label(line)
+        if lab:
+            schedules.append((i, lab))
 
     if not schedules:
         text = "\n".join(zone_lines)
-        if text.strip():
+        parts = [text]
+        if est_tokens(text) > max_tokens:
+            parts = _split_subtotals(zone_lines, max_tokens)
+        for part in parts:
+            if not part.strip():
+                continue
             chunks.append(Chunk(
                 chunk_id=str(uuid.uuid4()), chunk_type="schedule_table",
                 document_title=doc_title,
                 document_year=doc_year,
                 source_file=source_file,
-                zone="budget_table", text=text.strip(),
+                zone="budget_table", text=part.strip(),
                 page_start=page_at(zone_start, page_map),
                 page_end=page_at(zone_start + len(zone_lines), page_map),
-                token_count=est_tokens(text),
+                token_count=est_tokens(part),
             ))
         return chunks
 
@@ -583,12 +856,14 @@ def _split_schedule(sched_lines: list[str], max_tokens: int) -> list[str]:
 def _split_subtotals(lines_list: list[str], max_tokens: int) -> list[str]:
     result = []
     cur = []
+    break_markers = ("جملة", "total", "sous-total", "sous total", "total des")
     for line in lines_list:
         cur.append(line)
         if est_tokens("\n".join(cur)) > max_tokens:
             sp = None
             for j in range(len(cur) - 1, -1, -1):
-                if "جملة" in cur[j]:
+                low = cur[j].lower()
+                if any(m in low for m in break_markers):
                     sp = j
                     break
             if sp and sp > 0:
@@ -602,7 +877,66 @@ def _split_subtotals(lines_list: list[str], max_tokens: int) -> list[str]:
         rem = "\n".join(cur)
         if rem.strip():
             result.append(rem)
-    return result
+
+    # Hard safety split so we never keep oversized table chunks.
+    safe: list[str] = []
+    for part in result:
+        if est_tokens(part) <= max_tokens:
+            safe.append(part)
+        else:
+            safe.extend(_hard_split_by_tokens(part.split("\n"), max_tokens))
+    return safe
+
+
+def _hard_split_by_tokens(lines_list: list[str], max_tokens: int) -> list[str]:
+    out: list[str] = []
+    cur: list[str] = []
+    for line in lines_list:
+        candidate = "\n".join(cur + [line])
+        if cur and est_tokens(candidate) > max_tokens:
+            out.append("\n".join(cur))
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        out.append("\n".join(cur))
+    return [p for p in out if p.strip()]
+
+
+def _hard_split_words(text: str, max_tokens: int) -> list[str]:
+    """Last-resort split for very long single-line OCR blocks."""
+    words = text.split()
+    if not words:
+        return []
+
+    # Approximate conversion from token budget to words.
+    max_words = max(40, int(max_tokens / 1.5))
+    out: list[str] = []
+    cur: list[str] = []
+    for w in words:
+        candidate = " ".join(cur + [w])
+        if cur and est_tokens(candidate) > max_tokens:
+            out.append(" ".join(cur))
+            cur = [w]
+        else:
+            cur.append(w)
+            if len(cur) >= max_words:
+                out.append(" ".join(cur))
+                cur = []
+    if cur:
+        out.append(" ".join(cur))
+    return [p for p in out if p.strip()]
+
+
+def _is_tiny_article_heading(text: str) -> bool:
+    tok = est_tokens(text)
+    if tok > 6:
+        return False
+    line = text.strip().replace("\n", " ")
+    return bool(
+        re.match(r"^(?:art\.?|article)\s*(?:premi(?:er|ere)|1er|\d+)\s*[:\-]?\s*$", line, re.IGNORECASE)
+        or re.match(r"^الفصل\s+\d+\s*[\.\-–—:]?\s*$", line)
+    )
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -611,11 +945,11 @@ def _collect_input_files(input_path: str | None, input_dir: str | None) -> list[
     """Resolve input HTML files from --input or --input-dir."""
     files: list[str] = []
     if input_dir:
-        pattern = str(Path(input_dir) / "*.html")
-        files = sorted(glob.glob(pattern))
+        pattern = str(Path(input_dir) / "**" / "*.html")
+        files = sorted(glob.glob(pattern, recursive=True))
     elif input_path:
         if "*" in input_path:
-            files = sorted(glob.glob(input_path))
+            files = sorted(glob.glob(input_path, recursive=True))
         else:
             files = [input_path]
     return [f for f in files if Path(f).is_file()]
@@ -624,12 +958,16 @@ def _collect_input_files(input_path: str | None, input_dir: str | None) -> list[
 def process_single_file(input_path: str, max_table_tokens: int,
                         max_article_tokens: int) -> list[Chunk]:
     """Process one OCR HTML file and return its chunks."""
-    source_file = Path(input_path).name
+    source_file = Path(input_path).as_posix()
     print(f"\n{'='*60}")
     print(f"Processing: {source_file}")
     print(f"{'='*60}")
 
     lines, page_map, md_heading_lines, doc_title, doc_year = load(input_path)
+    if not doc_year:
+        path_years = re.findall(r"(19\d{2}|20\d{2})", source_file)
+        if path_years:
+            doc_year = path_years[-1]
     print(f"  {len(lines)} lines, {len(page_map)} page markers")
     print(f"  Title: {doc_title[:80] or '(not detected)'}")
     print(f"  Year:  {doc_year or '(not detected)'}")
@@ -688,7 +1026,7 @@ def process_single_file(input_path: str, max_table_tokens: int,
 
 
 def run(input_path="ocr_output.html", output_path="chunks_graphrag.json",
-        max_table_tokens=1000, max_article_tokens=1000, input_dir=None):
+        max_table_tokens=800, max_article_tokens=900, input_dir=None):
     files = _collect_input_files(input_path, input_dir)
     if not files:
         print(f"ERROR: No HTML files found (input={input_path}, input_dir={input_dir})")
@@ -722,8 +1060,8 @@ def main():
     p.add_argument("--input-dir", default=None,
                    help="Directory containing OCR HTML files (e.g. 'OCR_Law')")
     p.add_argument("--output", default="chunks_graphrag.json")
-    p.add_argument("--max-table-tokens", type=int, default=1000)
-    p.add_argument("--max-article-tokens", type=int, default=1000)
+    p.add_argument("--max-table-tokens", type=int, default=800)
+    p.add_argument("--max-article-tokens", type=int, default=900)
     args = p.parse_args()
 
     # Default: look for OCR_Law directory, fall back to single file
