@@ -74,7 +74,7 @@ pip install -r requirements.txt
 ### 2. Configure environment
 
 ```bash
-cp .env
+cp .env.example .env
 ```
 
 Set at least:
