@@ -1,106 +1,69 @@
-# Agentic Graph RAG Backend for Tunisian Legal Documents
+# Agentic Graph RAG Backend for Tunisian Legal and Tax Documents
 
-This repository is the **backend** of an **agentic Graph RAG** project focused on Tunisian legal and tax documents (laws + explanatory notes).
+This repository contains the backend of an agentic Graph RAG system for Tunisian legal and tax content (laws and explanatory notes).
 
-It is designed to ingest documents (including data sourced from `https://jibaya.tn/documentation/`), build a Neo4j knowledge graph, and serve grounded Arabic answers through an API.
+The system ingests PDF documents, extracts text with OCR, builds structured chunks, stores links in Neo4j, and answers questions with grounded sources.
 
-## What This Project Is About
+## What this project does
 
-This backend solves one problem:
+- OCR on legal PDFs with PaddleOCR-VL
+- Law and notes chunking (Arabic and French)
+- Neo4j knowledge graph construction
+- Multi-step retrieval (keyword, graph traversal, optional vector)
+- Answer generation with grounding checks and citation-first behavior
+- Web API + simple UI (`/ui`)
 
-- Given legal documents and notes, answer user questions with **grounded references** instead of free-form guessing.
+## Graph RAG + agentic behavior
 
-It combines:
+This is Graph RAG, not plain RAG.
 
-- OCR for PDFs
-- structure-aware chunking
-- graph construction in Neo4j
-- vector + graph retrieval
-- an agentic LLM pipeline for final answer generation
+- Graph relations are used for retrieval expansion (`EXPLAINS`, `RELATES_TO`, `CROSS_REFERENCES`, `NEXT_CHUNK`, `CITES_EXTERNAL_ARTICLE`, etc.)
+- Query processing is multi-step (intent -> retrieve -> validate -> answer/fallback)
+- If evidence is weak or missing, the system asks for clarification instead of hallucinating
 
-## Is It RAG or Graph RAG?
+## Tech stack
 
-It is **Graph RAG**.
+- FastAPI
+- Neo4j
+- Qwen2.5-7B-Instruct (inference)
+- `intfloat/multilingual-e5-base` (embeddings)
+- PaddleOCR-VL 1.5
+- Modal (A100 deployment target)
 
-Why:
-
-- It does standard retrieval (text + vector), and
-- It also uses **graph relationships** in Neo4j (`MENTIONS`, `EXPLAINS`, `RELATES_TO`, `NEXT_CHUNK`, etc.) for retrieval expansion and reasoning.
-
-## Is It Agentic?
-
-Yes.
-
-The query pipeline is multi-step and stateful (not one-shot prompting):
-
-1. Analyze query intent/entities
-2. Retrieve from multiple channels (direct lookup, full-text, vectors, graph traversal)
-3. Evaluate relevance
-4. Generate grounded answer with citations
-5. Self-check and clarification fallback
-
-## Data Source and Input Files
-
-- `Data/` contains sample law and note PDFs as examples.
-- You can upload your own documents manually (for example from `jibeya.com`) and run the same pipeline.
-
-## Main Technical Components
-
-- App factory: `app/main.py`
-- Query endpoint: `app/routers/query.py`
-- OCR endpoint: `app/routers/ocr.py`
-- Document chunking endpoint: `app/routers/documents.py`
-- Graph build/stats/health endpoints: `app/routers/graph.py`
-- Agentic pipeline: `app/services/rag_agent.py`
-- OCR service (PaddleOCR-VL): `app/services/ocr_service.py`
-- Graph builder: `app/services/graph_builder.py`
-- Neo4j connection: `app/services/neo4j_service.py`
-
-## How It Works End-to-End
+## Repository structure
 
 ```text
-PDF (law or note)
-  -> OCR (PaddleOCR-VL)
-  -> OCR HTML/JSON
-  -> Chunking (law chunker or notes chunker)
-  -> Neo4j graph build (+ optional embeddings)
-  -> Agentic Graph RAG query pipeline
-  -> API response in Arabic with sources
+app/
+  main.py
+  config.py
+  models.py
+  routers/
+    query.py
+    graph.py
+    documents.py
+    ocr.py
+    ui.py
+  services/
+    rag_agent.py
+    graph_builder.py
+    graph_quality_report.py
+    neo4j_service.py
+    ocr_service.py
+    chunk_law.py
+    chunk_notes.py
+Data/
+  Law/
+  Notes/
+OCR_Law/
+OCR_Notes/
+modal_app.py
+requirements.txt
+.env
 ```
 
-## API Overview
+## Local setup
 
-### Root and Health
-
-- `GET /` -> service info
-- `GET /api/health` -> Neo4j connectivity + model readiness
-
-### OCR
-
-- `POST /api/ocr/process`
-- Input: PDF path, optional output paths, DPI
-- Output: OCR metadata + saved output paths
-
-### Document Chunking
-
-- `POST /api/documents/chunk`
-- Input: OCR HTML path, document type (`law|notes|auto`), token settings
-- Output: chunk metadata and output file path
-
-### Graph Build and Stats
-
-- `POST /api/graph/build` -> background graph build
-- `GET /api/graph/stats` -> current graph counts
-
-### Query
-
-- `POST /api/query`
-- Input: user legal question
-- Output: answer, sources, intent, and clarification flags
-
-## Project Setup
-
-## 1) Create environment
+### 1. Install
 
 ```bash
 python3 -m venv .venv
@@ -108,22 +71,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2) Configure environment variables
+### 2. Configure environment
 
 ```bash
-cp .env.example .env
+cp .env
 ```
 
 Set at least:
 
 - `NEO4J_URI`
-- `NEO4J_USER`
+- `NEO4J_USER` (or `NEO4J_USERNAME`)
 - `NEO4J_PASSWORD`
-- `NEO4J_DATABASE` (Aura: usually your instance DB name)
+- `NEO4J_DATABASE` (for Aura)
 
-Optional model/config variables are documented in `.env.example`.
-
-## 3) Run backend locally
+### 3. Run API
 
 ```bash
 uvicorn app.main:create_app --factory --reload
@@ -131,109 +92,115 @@ uvicorn app.main:create_app --factory --reload
 
 Open:
 
-- Swagger UI: `http://127.0.0.1:8000/docs`
+- Swagger: `http://127.0.0.1:8000/docs`
+- UI: `http://127.0.0.1:8000/ui`
 
-## How To Make It Work (Practical Runbook)
+## End-to-end runbook
 
-## Step A: OCR a PDF
+### A) OCR one PDF via API
 
 ```bash
-python3 ocr.py \
-  --input-pdf Data/Loi2025_17Arabe.pdf \
-  --output-html OCR_Law/ocr_output.html \
-  --output-json OCR_Law/ocr_output.json \
-  --dpi 170
+curl -X POST http://127.0.0.1:8000/api/ocr/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_pdf_path":"Data/Law/2026/Loi2025_17Arabe.pdf",
+    "dpi":170,
+    "output_html_path":"OCR_Law/2026/ocr_output2026.html",
+    "output_json_path":"OCR_Law/2026/ocr_output2026.json"
+  }'
 ```
 
-## Step B: Chunk the OCR output
-
-Law documents:
+### B) Chunk OCR outputs
 
 ```bash
-python3 app/services/chunk_law.py --input-dir OCR_Law --output chunks_graphrag.json
+python3 -m app.services.chunk_law --input-dir OCR_Law --output chunks_graphrag.json
+python3 -m app.services.chunk_notes --input-dir OCR_Notes --output chunks_notes.json
 ```
 
-Notes documents:
+### C) Build graph in Neo4j
 
 ```bash
-python3 app/services/chunk_notes.py --input-dir OCR_Notes --output chunks_notes.json
-```
-
-## Step C: Build Neo4j graph
-
-```bash
-python3 app/services/graph_builder.py \
+python3 -m app.services.graph_builder \
   --law-chunks chunks_graphrag.json \
   --note-chunks chunks_notes.json \
   --neo4j-uri "$NEO4J_URI" \
-  --neo4j-user "$NEO4J_USER" \
-  --neo4j-password "$NEO4J_PASSWORD"
+  --neo4j-user "${NEO4J_USER:-$NEO4J_USERNAME}" \
+  --neo4j-password "$NEO4J_PASSWORD" \
+  --neo4j-database "$NEO4J_DATABASE" \
+  --skip-embeddings --clear
 ```
 
-## Step D: Ask questions through API
+### D) Query API
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/query \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"ما هو الفصل 1؟"}'
+  -H "Content-Type: application/json" \
+  -d '{"query":"Que prevoit l article 36 de la loi de finances 2025 ?"}'
 ```
 
-## Deployment (Modal)
+## Modal deployment
 
-Deploy with:
+### 1) Create/update secret
+
+```bash
+./.venv/bin/modal secret create neo4j-credentials --force \
+  NEO4J_URI="neo4j+s://<your-aura-id>.databases.neo4j.io" \
+  NEO4J_USER="<neo4j-user>" \
+  NEO4J_PASSWORD="<neo4j-password>" \
+  NEO4J_DATABASE="<neo4j-database>"
+```
+
+### 2) Deploy
 
 ```bash
 ./.venv/bin/modal deploy modal_app.py
 ```
 
-This project is configured as a GPU-backed backend service on Modal.
+### 3) Health and graph status
 
-## Reliability and Safety Design
-
-The backend includes safeguards to improve answer quality:
-
-- evidence-strength gating before answer generation
-- citation-oriented output format (`[S#]`)
-- grounding checks and fallback rewrites
-- Arabic-output enforcement
-- safe fallback if evidence is insufficient
-
-## Current Scope
-
-This backend is optimized for the legal/tax corpus you ingest.
-
-If a question is outside the available corpus, the system should return a clarification/safe fallback instead of fabricating unsupported legal claims.
-
-## Directory Structure
-
-```text
-app/
-  main.py
-  models.py
-  routers/
-    query.py
-    documents.py
-    graph.py
-    ocr.py
-  services/
-    rag_agent.py
-    ocr_service.py
-    chunk_law.py
-    chunk_notes.py
-    graph_builder.py
-    neo4j_service.py
-Data/
-  (sample PDFs)
-OCR_Law/
-OCR_Notes/
-modal_app.py
-ocr.py
-requirements.txt
-.env.example
+```bash
+curl -sS https://<your-modal-url>/api/health
+curl -sS https://<your-modal-url>/api/graph/stats
 ```
 
-## Note on Data Usage
+### 4) Build graph on deployed app
 
-Before large-scale scraping or redistribution of materials from `https://jibaya.tn/documentation/`, verify legal/terms-of-use requirements for that source.
+`modal_app.py` mounts `chunks_graphrag.json` and `chunks_notes.json` into the container.
 
-Project realised by: Nadia Trabelsi
+```bash
+curl -X POST https://<your-modal-url>/api/graph/build \
+  -H "Content-Type: application/json" \
+  -d '{
+    "law_chunks_path":"/root/chunks_graphrag.json",
+    "note_chunks_path":"/root/chunks_notes.json",
+    "clear_graph":true,
+    "skip_embeddings":true
+  }'
+```
+
+## Quality checks
+
+Run graph-level diagnostics:
+
+```bash
+PYTHONPATH=. python3 app/services/graph_quality_report.py \
+  --neo4j-uri "$NEO4J_URI" \
+  --neo4j-user "${NEO4J_USER:-$NEO4J_USERNAME}" \
+  --neo4j-password "$NEO4J_PASSWORD" \
+  --neo4j-database "$NEO4J_DATABASE"
+```
+
+## Important behavior notes
+
+- Current answer language is enforced to French.
+- Questions outside indexed legal evidence return safe fallback/clarification.
+- This repository does not include model fine-tuning in the current version (inference pipeline only).
+
+## Data and compliance note
+
+`Data/` contains sample law and notes PDFs for reproducible runs.
+
+Before large-scale collection or redistribution from external sources (for example `https://jibaya.tn/documentation/`), verify legal and terms-of-use requirements.
+
+## Author
+Nadia Trabelsi
